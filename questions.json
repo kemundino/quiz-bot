@@ -1,0 +1,17 @@
+[
+  {
+    "question": "What is 2 + 2?",
+    "options": ["1", "2", "4", "5"],
+    "correct": 2
+  },
+  {
+    "question": "Capital of Ethiopia?",
+    "options": ["Adama", "Addis Ababa", "Hawassa", "Dire Dawa"],
+    "correct": 1
+  },
+  {
+    "question": "Which language is used in backend?",
+    "options": ["HTML", "CSS", "Node.js", "Figma"],
+    "correct": 2
+  }
+]
