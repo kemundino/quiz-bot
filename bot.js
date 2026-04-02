@@ -30,11 +30,11 @@ bot.onText(/\/start/, (msg) => {
 
   // Register user if not exists
   if (!users[chatId]) {
-    users[chatId] = {
-      current: 0,
-      score: 0
-    };
-
+users[chatId] = users[chatId] || {
+  current: 0,
+  score: 0,
+  bestScore: 0
+};
     saveUsers(); // ✅ persist new user
   }
 
@@ -64,9 +64,19 @@ function sendQuestion(chatId) {
   const q = questions[user.current];
 
   if (!q) {
-    bot.sendMessage(chatId, `✅ Finished!\nScore: ${user.score}/${questions.length}`);
-    return;
+  // Update best score
+  if (user.score > (user.bestScore || 0)) {
+    user.bestScore = user.score;
   }
+
+  saveUsers();
+
+  bot.sendMessage(
+    chatId,
+    `✅ Finished!\nScore: ${user.score}/${questions.length}\n🏆 Best: ${user.bestScore}`
+  );
+  return;
+}
 
   bot.sendPoll(
     chatId,
@@ -235,4 +245,31 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🌐 Server running on port ${PORT}`);
+});
+
+bot.onText(/\/leaderboard/, (msg) => {
+  const chatId = msg.chat.id;
+
+  const allUsers = Object.entries(users);
+
+  if (allUsers.length === 0) {
+    bot.sendMessage(chatId, "No users yet.");
+    return;
+  }
+
+  // Sort by bestScore descending
+  const sorted = allUsers.sort((a, b) => {
+    return (b[1].bestScore || 0) - (a[1].bestScore || 0);
+  });
+
+  // Take top 5
+  const top = sorted.slice(0, 5);
+
+  let text = "🏆 Leaderboard:\n\n";
+
+  top.forEach((user, index) => {
+    text += `${index + 1}. User ${user[0]} → ${user[1].bestScore || 0}\n`;
+  });
+
+  bot.sendMessage(chatId, text);
 });
