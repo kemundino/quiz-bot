@@ -24,19 +24,21 @@ const questions = JSON.parse(fs.readFileSync('./questions.json'));
 users = {};
 
 // 🔹 START
-
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
 
-  // Register user if not exists
+  // Save user info
   if (!users[chatId]) {
-users[chatId] = users[chatId] || {
-  current: 0,
-  score: 0,
-  bestScore: 0
-};
-    saveUsers(); // ✅ persist new user
+    users[chatId] = {
+      current: 0,
+      score: 0,
+      bestScore: 0,
+      username: msg.from.username || "",
+      firstName: msg.from.first_name || ""
+    };
   }
+
+  saveUsers();
 
   bot.sendMessage(chatId, "Welcome!\nType /quiz to start.");
 });
@@ -117,6 +119,12 @@ bot.on('message', (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
   const text = msg.text;
+
+if (users[msg.chat.id]) {
+  users[msg.chat.id].username = msg.from.username || "";
+  users[msg.chat.id].firstName = msg.from.first_name || "";
+  saveUsers();
+}
 
   // Ignore admin messages (optional)
   if (userId === ADMIN_ID) return;
@@ -257,18 +265,21 @@ bot.onText(/\/leaderboard/, (msg) => {
     return;
   }
 
-  // Sort by bestScore descending
   const sorted = allUsers.sort((a, b) => {
     return (b[1].bestScore || 0) - (a[1].bestScore || 0);
   });
 
-  // Take top 5
   const top = sorted.slice(0, 5);
 
   let text = "🏆 Leaderboard:\n\n";
 
   top.forEach((user, index) => {
-    text += `${index + 1}. User ${user[0]} → ${user[1].bestScore || 0}\n`;
+    const data = user[1];
+
+    const name = data.firstName || "User";
+    const username = data.username ? `@${data.username}` : "";
+
+    text += `${index + 1}. ${name} ${username} → ${data.bestScore || 0}\n`;
   });
 
   bot.sendMessage(chatId, text);
