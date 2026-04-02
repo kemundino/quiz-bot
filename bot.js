@@ -9,7 +9,7 @@ let users = JSON.parse(fs.readFileSync(USERS_FILE, 'utf-8'));
 function saveUsers() {
   fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
 }
-const token = '8688340788:AAGlFlzgjJfq0JqD15mRKUVbhVu5-eKzRYk';
+const token = process.env.TOKEN;
 const bot = new TelegramBot(token, { polling: true });
 
 console.log("✅ Bot is running...");
