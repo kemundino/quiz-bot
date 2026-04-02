@@ -2,9 +2,14 @@ const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const USERS_FILE = './users.json';
 
-// Load users from file
-let users = JSON.parse(fs.readFileSync(USERS_FILE, 'utf-8'));
+let users = {};
 
+// Check if file exists
+if (fs.existsSync(USERS_FILE)) {
+  users = JSON.parse(fs.readFileSync(USERS_FILE, 'utf-8'));
+} else {
+  fs.writeFileSync(USERS_FILE, JSON.stringify({}));
+}
 // Save users to file
 function saveUsers() {
   fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
