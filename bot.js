@@ -209,3 +209,19 @@ bot.onText(/\/listusers/, (msg) => {
 
   bot.sendMessage(msg.chat.id, `👥 Users:\n\n${list}`);
 });
+bot.onText(/\/block (\d+)/, (msg, match) => {
+  if (msg.from.id !== ADMIN_ID) return;
+
+  const userId = match[1];
+  blockedUsers.add(userId);
+
+  bot.sendMessage(msg.chat.id, `🚫 User ${userId} blocked`);
+});
+bot.onText(/\/unblock (\d+)/, (msg, match) => {
+  if (msg.from.id !== ADMIN_ID) return;
+
+  const userId = match[1];
+  blockedUsers.delete(userId);
+
+  bot.sendMessage(msg.chat.id, `✅ User ${userId} unblocked`);
+});
