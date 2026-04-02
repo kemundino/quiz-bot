@@ -1,40 +1,59 @@
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
-const USERS_FILE = './users.json';
-let adminState = {};
-bot.onText(/\/addquestion/, (msg) => {
-  if (msg.from.id !== ADMIN_ID) return;
+const express = require('express');
 
-  adminState[msg.chat.id] = { step: 1 };
-
-  bot.sendMessage(msg.chat.id, "📝 Send the question:");
-});
-let users = {};
-
-// Check if file exists
-if (fs.existsSync(USERS_FILE)) {
-  users = JSON.parse(fs.readFileSync(USERS_FILE, 'utf-8'));
-} else {
-  fs.writeFileSync(USERS_FILE, JSON.stringify({}));
-}
-// Save users to file
-function saveUsers() {
-  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-}
+// =====================
+// CONFIG
+// =====================
 const token = process.env.TOKEN;
+const ADMIN_ID = 1983262664;
+
 const bot = new TelegramBot(token, { polling: true });
 
 console.log("✅ Bot is running...");
 
-const questions = JSON.parse(fs.readFileSync('./questions.json'));
+// =====================
+// FILES
+// =====================
+const USERS_FILE = './users.json';
+const QUESTIONS_FILE = './questions.json';
 
-users = {};
+// Load users
+let users = {};
+if (fs.existsSync(USERS_FILE)) {
+  users = JSON.parse(fs.readFileSync(USERS_FILE));
+} else {
+  fs.writeFileSync(USERS_FILE, JSON.stringify({}));
+}
 
-// 🔹 START
+// Load questions
+let questions = [];
+if (fs.existsSync(QUESTIONS_FILE)) {
+  questions = JSON.parse(fs.readFileSync(QUESTIONS_FILE));
+}
+
+// Save users
+function saveUsers() {
+  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+}
+
+// Save questions
+function saveQuestions() {
+  fs.writeFileSync(QUESTIONS_FILE, JSON.stringify(questions, null, 2));
+}
+
+// =====================
+// ADMIN STATE
+// =====================
+let adminState = {};
+let blockedUsers = new Set();
+
+// =====================
+// START
+// =====================
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
 
-  // Save user info
   if (!users[chatId]) {
     users[chatId] = {
       current: 0,
@@ -50,381 +69,236 @@ bot.onText(/\/start/, (msg) => {
   bot.sendMessage(chatId, "Welcome!\nType /quiz to start.");
 });
 
-// 🔹 QUIZ START
-
+// =====================
+// QUIZ
+// =====================
 bot.onText(/\/quiz/, (msg) => {
   const chatId = msg.chat.id;
 
-  if (!users[chatId]) {
-    users[chatId] = {
-      current: 0,
-      score: 0
-    };
-  }
+  if (!users[chatId]) return;
 
-  saveUsers();
+  users[chatId].current = 0;
+  users[chatId].score = 0;
 
   sendQuestion(chatId);
 });
 
-// 🔹 SEND QUESTION
 function sendQuestion(chatId) {
   const user = users[chatId];
   const q = questions[user.current];
 
   if (!q) {
-  // Update best score
-  if (user.score > (user.bestScore || 0)) {
-    user.bestScore = user.score;
+    if (user.score > (user.bestScore || 0)) {
+      user.bestScore = user.score;
+    }
+
+    saveUsers();
+
+    bot.sendMessage(
+      chatId,
+      `✅ Finished!\nScore: ${user.score}/${questions.length}\n🏆 Best: ${user.bestScore}`
+    );
+    return;
   }
 
-  saveUsers();
-
-  bot.sendMessage(
-    chatId,
-    `✅ Finished!\nScore: ${user.score}/${questions.length}\n🏆 Best: ${user.bestScore}`
-  );
-  return;
+  bot.sendPoll(chatId, q.question, q.options, {
+    type: "quiz",
+    correct_option_id: q.correct,
+    is_anonymous: false
+  });
 }
 
-  bot.sendPoll(
-    chatId,
-    `Question ${user.current + 1}/${questions.length}\n\n${q.question}`,
-    q.options,
-    {
-      type: "quiz",
-      correct_option_id: q.correct,
-      is_anonymous: false
-    }
-  );
-}
-
-// 🔹 HANDLE ANSWER
 bot.on('poll_answer', (answer) => {
   const userId = answer.user.id;
-  const selected = answer.option_ids[0];
 
   if (!users[userId]) return;
-const user = users[userId];
-  if (!user) return;
 
+  const user = users[userId];
+  const selected = answer.option_ids[0];
   const q = questions[user.current];
 
-  if (selected === q.correct) {
-    user.score++;
-  }
+  if (selected === q.correct) user.score++;
 
   user.current++;
-saveUsers();
-  setTimeout(() => {
-    sendQuestion(userId);
-  }, 1000);
-});
-
-
-bot.on('message', (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  const text = msg.text;
-
-  const state = adminState[msg.chat.id];
-
- if (msg.from.id === ADMIN_ID && state) {
-  const text = msg.text;
-
-  // Step 1: Question
-  if (state.step === 1) {
-    state.question = text;
-    state.step = 2;
-
-    bot.sendMessage(msg.chat.id, "Send options separated by comma:\nExample: A,B,C,D");
-    return;
- }
- 
-   // Step 2: Options
-  if (state.step === 2) {
-    state.options = text.split(",");
-    state.step = 3;
-
-    bot.sendMessage(msg.chat.id, "Send correct option number (0,1,2,3):");
-    return;
-   }
- 
-   
-   // Step 3: Correct Answer
-   if (state.step === 3) {
-    state.correct = parseInt(text);
-
-    const newQuestion = {
-      question: state.question,
-      options: state.options,
-      correct: state.correct
-    };
-
-    questions.push(newQuestion);
-
-    fs.writeFileSync('./questions.json', JSON.stringify(questions, null, 2));
-
-    delete adminState[msg.chat.id];
-
-    bot.sendMessage(msg.chat.id, "✅ Question added successfully!");
-    return;
-  }
-
-
-  const state = adminState[msg.chat.id];
-
- if (msg.from.id === ADMIN_ID && state && state.editIndex !== undefined) {
-  const text = msg.text;
-
-  // Step 1: New Question
-  if (state.step === 1) {
-    state.question = text;
-    state.step = 2;
-
-    bot.sendMessage(msg.chat.id, "Send new options separated by comma:");
-    return;
-  }
-
-  // Step 2: Options
-  if (state.step === 2) {
-    state.options = text.split(",");
-    state.step = 3;
-
-    bot.sendMessage(msg.chat.id, "Send correct option index (0,1,2,3):");
-    return;
-  }
-
-  // Step 3: Correct Answer
-  if (state.step === 3) {
-    state.correct = parseInt(text);
-
-    questions[state.editIndex] = {
-      question: state.question,
-      options: state.options,
-      correct: state.correct
-    };
-
-    fs.writeFileSync('./questions.json', JSON.stringify(questions, null, 2));
-
-    delete adminState[msg.chat.id];
-
-    bot.sendMessage(msg.chat.id, "✅ Question updated successfully!");
-    return;
-  }
- }
-
-}
-if (users[msg.chat.id]) {
-  users[msg.chat.id].username = msg.from.username || "";
-  users[msg.chat.id].firstName = msg.from.first_name || "";
   saveUsers();
-}
 
-  // Ignore admin messages (optional)
-  if (userId === ADMIN_ID) return;
-
-  // Forward message to admin
-  bot.sendMessage(
-    ADMIN_ID,
-    `📩 New message from user:\n\n👤 ID: ${userId}\n💬 Message: ${text}`
-  );
-});
-// 🔹 LOG USER MESSAGES
-bot.on('message', (msg) => {
-  if (msg.text) {
-    bot.sendMessage(msg.chat.id, `You sent: "${msg.text}"`);
-  } else {
-    bot.sendMessage(msg.chat.id, "I can only process text messages right now.");
-  }
+  setTimeout(() => sendQuestion(userId), 1000);
 });
 
-// 🔹 MESSAGE CONTROL (ONLY ONE HANDLER)
-bot.on('message', (msg) => {
-  const chatId = msg.chat.id;
-  const text = msg.text;
-
-  // ignore commands
-  if (text.startsWith('/')) return;
-
-  const user = users[chatId];
-
-  if (!user) {
-    bot.sendMessage(chatId, "👉 Type /quiz to start.");
-    return;
-  }
-
-  bot.sendMessage(chatId, "✅ Please answer using the options.");
-});
-
-// 🔹 Admin ID
-const ADMIN_ID =  1983262664; // Replace with the actual admin's Telegram user ID
-
-bot.onText(/\/users/, (msg) => {
-  if (msg.from.id !== ADMIN_ID) {
-    bot.sendMessage(msg.chat.id, "❌ Unauthorized");
-    return;
-  }
-
-  const totalUsers = Object.keys(users).length;
-
-  bot.sendMessage(msg.chat.id, `👥 Total users: ${totalUsers}`);
-});
-
-
-// 🔹 BROADCAST COMMAND
-bot.onText(/\/broadcast (.+)/, (msg, match) => {
-  if (msg.from.id !== ADMIN_ID) {
-    bot.sendMessage(msg.chat.id, "❌ You are not authorized to use this command.");
-    return;
-  }
-
-  const message = match[1];
-  Object.keys(users).forEach((chatId) => {
-    bot.sendMessage(chatId, `📢 Admin Broadcast: ${message}`);
-  });
-
-  bot.sendMessage(msg.chat.id, "✅ Broadcast sent to all users.");
-});
-bot.on('message', (msg) => {
-  const userId = msg.from.id;
-
-  // Only allow admin to reply using a format
-  if (userId === ADMIN_ID && msg.reply_to_message) {
-    const repliedText = msg.reply_to_message.text;
-
-    // Extract user ID from forwarded message
-    const match = repliedText.match(/ID: (\d+)/);
-
-    if (match) {
-      const targetUserId = match[1];
-
-      const replyText = msg.text;
-
-      bot.sendMessage(targetUserId, `📢 Admin reply:\n\n${replyText}`);
-    }
-  }
-});
-bot.onText(/\/listusers/, (msg) => {
-  if (msg.from.id !== ADMIN_ID) {
-    bot.sendMessage(msg.chat.id, "❌ Unauthorized");
-    return;
-  }
-
-  const userIds = Object.keys(users);
-
-  if (userIds.length === 0) {
-    bot.sendMessage(msg.chat.id, "No users found.");
-    return;
-  }
-
-  const list = userIds.join('\n');
-
-  bot.sendMessage(msg.chat.id, `👥 Users:\n\n${list}`);
-});
-bot.onText(/\/block (\d+)/, (msg, match) => {
+// =====================
+// ADMIN COMMANDS
+// =====================
+bot.onText(/\/addquestion/, (msg) => {
   if (msg.from.id !== ADMIN_ID) return;
 
-  const userId = match[1];
-  blockedUsers.add(userId);
-
-  bot.sendMessage(msg.chat.id, `🚫 User ${userId} blocked`);
-});
-bot.onText(/\/unblock (\d+)/, (msg, match) => {
-  if (msg.from.id !== ADMIN_ID) return;
-
-  const userId = match[1];
-  blockedUsers.delete(userId);
-
-  bot.sendMessage(msg.chat.id, `✅ User ${userId} unblocked`);
-});const express = require('express');
-const app = express();
-
-const PORT = process.env.PORT || 3000;
-
-app.get('/', (req, res) => {
-  res.send('Bot is running ✅');
+  adminState[msg.chat.id] = { step: 1 };
+  bot.sendMessage(msg.chat.id, "📝 Send the question:");
 });
 
-app.listen(PORT, () => {
-  console.log(`🌐 Server running on port ${PORT}`);
-});
-
-bot.onText(/\/leaderboard/, (msg) => {
-  const chatId = msg.chat.id;
-
-  const allUsers = Object.entries(users);
-
-  if (allUsers.length === 0) {
-    bot.sendMessage(chatId, "No users yet.");
-    return;
-  }
-
-  const sorted = allUsers.sort((a, b) => {
-    return (b[1].bestScore || 0) - (a[1].bestScore || 0);
-  });
-
-  const top = sorted.slice(0, 5);
-
-  let text = "🏆 Leaderboard:\n\n";
-
-  top.forEach((user, index) => {
-    const data = user[1];
-
-    const name = data.firstName || "User";
-    const username = data.username ? `@${data.username}` : "";
-
-    text += `${index + 1}. ${name} ${username} → ${data.bestScore || 0}\n`;
-  });
-
-  bot.sendMessage(chatId, text);
-});
-bot.onText(/\/listquestions/, (msg) => {
-  if (msg.from.id !== ADMIN_ID) return;
-
-  if (questions.length === 0) {
-    bot.sendMessage(msg.chat.id, "No questions available.");
-    return;
-  }
-
-  let text = "📋 Questions:\n\n";
-
-  questions.forEach((q, index) => {
-    text += `${index}. ${q.question}\n`;
-  });
-
-  bot.sendMessage(msg.chat.id, text);
-});
-bot.onText(/\/deletequestion (\d+)/, (msg, match) => {
-  if (msg.from.id !== ADMIN_ID) return;
-
-  const index = parseInt(match[1]);
-
-  if (!questions[index]) {
-    bot.sendMessage(msg.chat.id, "❌ Invalid question index.");
-    return;
-  }
-
-  const deleted = questions.splice(index, 1);
-
-  fs.writeFileSync('./questions.json', JSON.stringify(questions, null, 2));
-
-  bot.sendMessage(msg.chat.id, `🗑 Deleted:\n${deleted[0].question}`);
-});
 bot.onText(/\/editquestion (\d+)/, (msg, match) => {
   if (msg.from.id !== ADMIN_ID) return;
 
   const index = parseInt(match[1]);
+  if (!questions[index]) return bot.sendMessage(msg.chat.id, "Invalid index");
 
-  if (!questions[index]) {
-    bot.sendMessage(msg.chat.id, "❌ Invalid question index.");
-    return;
+  adminState[msg.chat.id] = { step: 1, editIndex: index };
+  bot.sendMessage(msg.chat.id, "✏️ Send new question:");
+});
+
+bot.onText(/\/deletequestion (\d+)/, (msg, match) => {
+  if (msg.from.id !== ADMIN_ID) return;
+
+  const index = parseInt(match[1]);
+  if (!questions[index]) return bot.sendMessage(msg.chat.id, "Invalid index");
+
+  const deleted = questions.splice(index, 1);
+  saveQuestions();
+
+  bot.sendMessage(msg.chat.id, `Deleted: ${deleted[0].question}`);
+});
+
+bot.onText(/\/listquestions/, (msg) => {
+  if (msg.from.id !== ADMIN_ID) return;
+
+  let text = "📋 Questions:\n\n";
+  questions.forEach((q, i) => text += `${i}. ${q.question}\n`);
+
+  bot.sendMessage(msg.chat.id, text);
+});
+
+// =====================
+// LEADERBOARD
+// =====================
+bot.onText(/\/leaderboard/, (msg) => {
+  const sorted = Object.entries(users)
+    .sort((a, b) => (b[1].bestScore || 0) - (a[1].bestScore || 0))
+    .slice(0, 5);
+
+  let text = "🏆 Leaderboard:\n\n";
+
+  sorted.forEach((u, i) => {
+    const data = u[1];
+    const name = data.firstName || "User";
+    const username = data.username ? `(@${data.username})` : "";
+
+    text += `${i + 1}. ${name} ${username} → ${data.bestScore}\n`;
+  });
+
+  bot.sendMessage(msg.chat.id, text);
+});
+
+// =====================
+// USERS
+// =====================
+bot.onText(/\/users/, (msg) => {
+  if (msg.from.id !== ADMIN_ID) return;
+
+  bot.sendMessage(msg.chat.id, `👥 Total users: ${Object.keys(users).length}`);
+});
+
+// =====================
+// MESSAGE HANDLER (ONLY ONE)
+// =====================
+bot.on('message', (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const text = msg.text;
+
+  if (!text || text.startsWith('/')) return;
+
+  if (blockedUsers.has(userId.toString())) {
+    return bot.sendMessage(chatId, "🚫 You are blocked.");
   }
 
-  adminState[msg.chat.id] = {
-    step: 1,
-    editIndex: index
-  };
+  // Ensure user exists
+  if (!users[chatId]) {
+    users[chatId] = { current: 0, score: 0, bestScore: 0 };
+  }
 
-  bot.sendMessage(msg.chat.id, "✏️ Send new question text:");
+  // Update user info
+  users[chatId].username = msg.from.username || "";
+  users[chatId].firstName = msg.from.first_name || "";
+  saveUsers();
+
+  const state = adminState[chatId];
+
+  // ===== ADD QUESTION =====
+  if (userId === ADMIN_ID && state && !state.editIndex) {
+    if (state.step === 1) {
+      state.question = text;
+      state.step = 2;
+      return bot.sendMessage(chatId, "Send options: A,B,C,D");
+    }
+
+    if (state.step === 2) {
+      state.options = text.split(",");
+      state.step = 3;
+      return bot.sendMessage(chatId, "Correct option index (0-3):");
+    }
+
+    if (state.step === 3) {
+      state.correct = parseInt(text);
+
+      questions.push({
+        question: state.question,
+        options: state.options,
+        correct: state.correct
+      });
+
+      saveQuestions();
+      delete adminState[chatId];
+
+      return bot.sendMessage(chatId, "✅ Question added!");
+    }
+  }
+
+  // ===== EDIT QUESTION =====
+  if (userId === ADMIN_ID && state && state.editIndex !== undefined) {
+    if (state.step === 1) {
+      state.question = text;
+      state.step = 2;
+      return bot.sendMessage(chatId, "New options:");
+    }
+
+    if (state.step === 2) {
+      state.options = text.split(",");
+      state.step = 3;
+      return bot.sendMessage(chatId, "Correct index:");
+    }
+
+    if (state.step === 3) {
+      questions[state.editIndex] = {
+        question: state.question,
+        options: state.options,
+        correct: parseInt(text)
+      };
+
+      saveQuestions();
+      delete adminState[chatId];
+
+      return bot.sendMessage(chatId, "✅ Updated!");
+    }
+  }
+
+  // Forward to admin
+  if (userId !== ADMIN_ID) {
+    bot.sendMessage(
+      ADMIN_ID,
+      `📩 User:\nID: ${userId}\nMessage: ${text}`
+    );
+  }
+});
+
+// =====================
+// EXPRESS SERVER
+// =====================
+const app = express();
+
+app.get('/', (req, res) => {
+  res.send("Bot is running ✅");
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🌐 Server running on ${PORT}`);
 });
