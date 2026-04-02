@@ -1,7 +1,14 @@
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const USERS_FILE = './users.json';
+let adminState = {};
+bot.onText(/\/addquestion/, (msg) => {
+  if (msg.from.id !== ADMIN_ID) return;
 
+  adminState[msg.chat.id] = { step: 1 };
+
+  bot.sendMessage(msg.chat.id, "📝 Send the question:");
+});
 let users = {};
 
 // Check if file exists
@@ -120,6 +127,49 @@ bot.on('message', (msg) => {
   const userId = msg.from.id;
   const text = msg.text;
 
+  const state = adminState[msg.chat.id];
+
+ if (msg.from.id === ADMIN_ID && state) {
+  const text = msg.text;
+
+  // Step 1: Question
+  if (state.step === 1) {
+    state.question = text;
+    state.step = 2;
+
+    bot.sendMessage(msg.chat.id, "Send options separated by comma:\nExample: A,B,C,D");
+    return;
+}
+ 
+   // Step 2: Options
+  if (state.step === 2) {
+    state.options = text.split(",");
+    state.step = 3;
+
+    bot.sendMessage(msg.chat.id, "Send correct option number (0,1,2,3):");
+    return;
+   }
+
+   // Step 3: Correct Answer
+   if (state.step === 3) {
+    state.correct = parseInt(text);
+
+    const newQuestion = {
+      question: state.question,
+      options: state.options,
+      correct: state.correct
+    };
+
+    questions.push(newQuestion);
+
+    fs.writeFileSync('./questions.json', JSON.stringify(questions, null, 2));
+
+    delete adminState[msg.chat.id];
+
+    bot.sendMessage(msg.chat.id, "✅ Question added successfully!");
+    return;
+  }
+}
 if (users[msg.chat.id]) {
   users[msg.chat.id].username = msg.from.username || "";
   users[msg.chat.id].firstName = msg.from.first_name || "";
