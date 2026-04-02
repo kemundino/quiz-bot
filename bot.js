@@ -139,7 +139,7 @@ bot.on('message', (msg) => {
 
     bot.sendMessage(msg.chat.id, "Send options separated by comma:\nExample: A,B,C,D");
     return;
-}
+ }
  
    // Step 2: Options
   if (state.step === 2) {
@@ -149,7 +149,8 @@ bot.on('message', (msg) => {
     bot.sendMessage(msg.chat.id, "Send correct option number (0,1,2,3):");
     return;
    }
-
+ 
+   
    // Step 3: Correct Answer
    if (state.step === 3) {
     state.correct = parseInt(text);
@@ -169,6 +170,50 @@ bot.on('message', (msg) => {
     bot.sendMessage(msg.chat.id, "✅ Question added successfully!");
     return;
   }
+
+
+  const state = adminState[msg.chat.id];
+
+ if (msg.from.id === ADMIN_ID && state && state.editIndex !== undefined) {
+  const text = msg.text;
+
+  // Step 1: New Question
+  if (state.step === 1) {
+    state.question = text;
+    state.step = 2;
+
+    bot.sendMessage(msg.chat.id, "Send new options separated by comma:");
+    return;
+  }
+
+  // Step 2: Options
+  if (state.step === 2) {
+    state.options = text.split(",");
+    state.step = 3;
+
+    bot.sendMessage(msg.chat.id, "Send correct option index (0,1,2,3):");
+    return;
+  }
+
+  // Step 3: Correct Answer
+  if (state.step === 3) {
+    state.correct = parseInt(text);
+
+    questions[state.editIndex] = {
+      question: state.question,
+      options: state.options,
+      correct: state.correct
+    };
+
+    fs.writeFileSync('./questions.json', JSON.stringify(questions, null, 2));
+
+    delete adminState[msg.chat.id];
+
+    bot.sendMessage(msg.chat.id, "✅ Question updated successfully!");
+    return;
+  }
+ }
+
 }
 if (users[msg.chat.id]) {
   users[msg.chat.id].username = msg.from.username || "";
@@ -333,4 +378,53 @@ bot.onText(/\/leaderboard/, (msg) => {
   });
 
   bot.sendMessage(chatId, text);
+});
+bot.onText(/\/listquestions/, (msg) => {
+  if (msg.from.id !== ADMIN_ID) return;
+
+  if (questions.length === 0) {
+    bot.sendMessage(msg.chat.id, "No questions available.");
+    return;
+  }
+
+  let text = "📋 Questions:\n\n";
+
+  questions.forEach((q, index) => {
+    text += `${index}. ${q.question}\n`;
+  });
+
+  bot.sendMessage(msg.chat.id, text);
+});
+bot.onText(/\/deletequestion (\d+)/, (msg, match) => {
+  if (msg.from.id !== ADMIN_ID) return;
+
+  const index = parseInt(match[1]);
+
+  if (!questions[index]) {
+    bot.sendMessage(msg.chat.id, "❌ Invalid question index.");
+    return;
+  }
+
+  const deleted = questions.splice(index, 1);
+
+  fs.writeFileSync('./questions.json', JSON.stringify(questions, null, 2));
+
+  bot.sendMessage(msg.chat.id, `🗑 Deleted:\n${deleted[0].question}`);
+});
+bot.onText(/\/editquestion (\d+)/, (msg, match) => {
+  if (msg.from.id !== ADMIN_ID) return;
+
+  const index = parseInt(match[1]);
+
+  if (!questions[index]) {
+    bot.sendMessage(msg.chat.id, "❌ Invalid question index.");
+    return;
+  }
+
+  adminState[msg.chat.id] = {
+    step: 1,
+    editIndex: index
+  };
+
+  bot.sendMessage(msg.chat.id, "✏️ Send new question text:");
 });
