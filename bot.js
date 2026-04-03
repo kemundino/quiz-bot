@@ -92,35 +92,45 @@ async function sendQuestion(chatId) {
   const user = userDoc.data();
 
   const snapshot = await db.collection('questions').get();
-  const questions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  const questions = snapshot.docs.map(doc => ({
+    id: doc.id,
+    ...doc.data()
+  }));
 
   const q = questions[user.current];
 
   if (!q) {
-    let best = user.bestScore || 0;
-
-    if (user.score > best) {
-      best = user.score;
+    // finished
+    if (user.score > (user.bestScore || 0)) {
+      await db.collection('users').doc(chatId).update({
+        bestScore: user.score
+      });
     }
 
-    await db.collection('users').doc(chatId).update({
-      bestScore: best
-    });
-
-    return  bot.sendMessage(chatId, `✅ Finished!\nScore: ${user.score}`, {
-  reply_markup: {
-    inline_keyboard: [
-      [{ text: "🔙 Back to Menu", callback_data: "back_menu" }]
-    ]
+    return bot.sendMessage(chatId,
+      `✅ Finished!\nScore: ${user.score}/${questions.length}`,
+      {
+        reply_markup: {
+          keyboard: [
+            ["▶️ Start Quiz"],
+            ["🔙 Back"]
+          ],
+          resize_keyboard: true
+        }
+      }
+    );
   }
-});
-  }
 
-  bot.sendPoll(chatId, q.question, q.options, {
-    type: "quiz",
-    correct_option_id: q.correct,
-    is_anonymous: false
-  });
+  bot.sendPoll(
+    chatId,
+    `Question ${user.current + 1}/${questions.length}\n\n${q.question}`,
+    q.options,
+    {
+      type: "quiz",
+      correct_option_id: q.correct,
+      is_anonymous: false
+    }
+  );
 }
 
 // =====================
@@ -128,26 +138,26 @@ async function sendQuestion(chatId) {
 // =====================
 bot.on('poll_answer', async (answer) => {
   const userId = answer.user.id.toString();
+  const selected = answer.option_ids[0];
 
   const userRef = db.collection('users').doc(userId);
   const userDoc = await userRef.get();
-
-  if (!userDoc.exists) return;
-
   const user = userDoc.data();
 
   const snapshot = await db.collection('questions').get();
   const questions = snapshot.docs.map(doc => doc.data());
 
   const q = questions[user.current];
-  const selected = answer.option_ids[0];
 
-  let newScore = user.score;
-  if (selected === q.correct) newScore++;
+  if (selected === q.correct) {
+    user.score++;
+  }
+
+  user.current++;
 
   await userRef.update({
-    score: newScore,
-    current: user.current + 1
+    score: user.score,
+    current: user.current
   });
 
   setTimeout(() => sendQuestion(userId), 1000);
@@ -260,16 +270,22 @@ if (userId === ADMIN_ID) {
     return bot.sendMessage(chatId, "Send question:");
   }
 
-  if (text === "📋 List Questions") {
-    const snapshot = await db.collection('questions').get();
+if (text === "📋 List Questions") {
+  const snapshot = await db.collection('questions').get();
 
-    let textMsg = "📋 Questions:\n\n";
-    snapshot.docs.forEach((doc, i) => {
-      textMsg += `${i}. ${doc.data().question}\n`;
-    });
+  const keyboard = snapshot.docs.map((doc, i) => {
+    return [{
+      text: `${i}. ${doc.data().question}`,
+      callback_data: `q_${doc.id}`
+    }];
+  });
 
-    return bot.sendMessage(chatId, textMsg);
-  }
+  return bot.sendMessage(chatId, "Select a question:", {
+    reply_markup: {
+      inline_keyboard: keyboard
+    }
+  });
+}
 
   if (text === "👥 Users") {
     const snapshot = await db.collection('users').get();
@@ -480,7 +496,36 @@ bot.on('callback_query', async (query) => {
 
     sendQuestion(chatId);
   }
+if (data.startsWith("q_")) {
+  const id = data.split("_")[1];
 
+  bot.sendMessage(chatId, "Choose action:", {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "✏️ Edit", callback_data: `edit_${id}` }],
+        [{ text: "🗑 Delete", callback_data: `del_${id}` }]
+      ]
+    }
+  });
+}
+if (data.startsWith("del_")) {
+  const id = data.split("_")[1];
+
+  await db.collection('questions').doc(id).delete();
+
+  bot.sendMessage(chatId, "🗑 Question deleted!");
+}
+
+if (data.startsWith("edit_")) {
+  const id = data.split("_")[1];
+
+  adminState[chatId] = {
+    step: 1,
+    editId: id
+  };
+
+  bot.sendMessage(chatId, "✏️ Send new question:");
+}
   // LEADERBOARD
   if (data === "leaderboard") {
     const snapshot = await db.collection('users').get();
