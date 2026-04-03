@@ -244,10 +244,10 @@ bot.on('message', async (msg) => {
   }
   // ================= USER BUTTONS =================
 if (text === "▶️ Start Quiz") {
-  await db.collection('users').doc(chatId).update({
+  await db.collection('users').doc(chatId).set({
     current: 0,
     score: 0
-  });
+  }, { merge: true });
 
   return sendQuestion(chatId);
 }
