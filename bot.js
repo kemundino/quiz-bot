@@ -45,7 +45,14 @@ bot.onText(/\/start/, async (msg) => {
     current: 0
   }, { merge: true });
 
-  bot.sendMessage(chatId, "Welcome!\nType /quiz to start.");
+  bot.sendMessage(chatId, "Welcome 👋 Choose an option:", {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "▶️ Start Quiz", callback_data: "start_quiz" }],
+        [{ text: "📊 Leaderboard", callback_data: "leaderboard" }]
+      ]
+    }
+  });
 });
 
 // =====================
@@ -85,10 +92,13 @@ async function sendQuestion(chatId) {
       bestScore: best
     });
 
-    return bot.sendMessage(
-      chatId,
-      `✅ Finished!\nScore: ${user.score}/${questions.length}\n🏆 Best: ${best}`
-    );
+    return  bot.sendMessage(chatId, `✅ Finished!\nScore: ${user.score}`, {
+  reply_markup: {
+    inline_keyboard: [
+      [{ text: "🔙 Back to Menu", callback_data: "back_menu" }]
+    ]
+  }
+});
   }
 
   bot.sendPoll(chatId, q.question, q.options, {
@@ -308,4 +318,124 @@ app.get('/', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🌐 Server running on ${PORT}`);
+});
+bot.onText(/\/admin/, (msg) => {
+  if (msg.from.id !== ADMIN_ID) return;
+
+  bot.sendMessage(msg.chat.id, "👑 Admin Panel:", {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "➕ Add Question", callback_data: "add_q" }],
+        [{ text: "📋 List Questions", callback_data: "list_q" }],
+        [{ text: "✏️ Edit Question", callback_data: "edit_q" }],
+        [{ text: "🗑 Delete Question", callback_data: "delete_q" }],
+        [{ text: "👥 Users", callback_data: "users" }],
+        [{ text: "📊 Leaderboard", callback_data: "leaderboard" }]
+      ]
+    }
+  });
+});
+bot.on('callback_query', async (query) => {
+  const chatId = query.message.chat.id.toString();
+  const data = query.data;
+
+  // USER ACTIONS
+  if (data === "start_quiz") {
+    await db.collection('users').doc(chatId).update({
+      current: 0,
+      score: 0
+    });
+
+    sendQuestion(chatId);
+  }
+
+  if (data === "leaderboard") {
+    const snapshot = await db.collection('users').get();
+    const users = snapshot.docs.map(doc => doc.data());
+
+    const sorted = users.sort((a, b) => (b.bestScore || 0) - (a.bestScore || 0)).slice(0, 5);
+
+    let text = "🏆 Leaderboard:\n\n";
+    sorted.forEach((u, i) => {
+      text += `${i + 1}. ${u.firstName || "User"} (@${u.username || ""}) → ${u.bestScore || 0}\n`;
+    });
+
+    bot.sendMessage(chatId, text);
+  }
+
+  // ADMIN ACTIONS
+  if (query.from.id === ADMIN_ID) {
+    if (data === "add_q") {
+      adminState[chatId] = { step: 1 };
+      bot.sendMessage(chatId, "📝 Send question:");
+    }
+
+    if (data === "list_q") {
+      const snapshot = await db.collection('questions').get();
+
+      let text = "📋 Questions:\n\n";
+      snapshot.docs.forEach((doc, i) => {
+        text += `${i}. ${doc.data().question}\n`;
+      });
+
+      bot.sendMessage(chatId, text);
+    }
+
+    if (data === "users") {
+      const snapshot = await db.collection('users').get();
+      bot.sendMessage(chatId, `👥 Total users: ${snapshot.size}`);
+    }
+
+    if (data === "edit_q") {
+      bot.sendMessage(chatId, "Send:\n/editquestion 0");
+    }
+
+    if (data === "delete_q") {
+      bot.sendMessage(chatId, "Send:\n/deletequestion 0");
+    }
+  }
+  bot.on('callback_query', async (query) => {
+  const chatId = query.message.chat.id.toString();
+  const data = query.data;
+
+  // START QUIZ
+  if (data === "start_quiz") {
+    await db.collection('users').doc(chatId).update({
+      current: 0,
+      score: 0
+    });
+
+    sendQuestion(chatId);
+  }
+
+  // LEADERBOARD
+  if (data === "leaderboard") {
+    const snapshot = await db.collection('users').get();
+    const users = snapshot.docs.map(doc => doc.data());
+
+    const sorted = users.sort((a, b) => (b.bestScore || 0) - (a.bestScore || 0)).slice(0, 5);
+
+    let text = "🏆 Leaderboard:\n\n";
+    sorted.forEach((u, i) => {
+      text += `${i + 1}. ${u.firstName || "User"} (@${u.username || ""}) → ${u.bestScore || 0}\n`;
+    });
+
+    bot.sendMessage(chatId, text);
+  }
+
+  // ✅ BACK MENU (ADD HERE)
+  if (data === "back_menu") {
+    bot.sendMessage(chatId, "Main Menu:", {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "▶️ Start Quiz", callback_data: "start_quiz" }],
+          [{ text: "📊 Leaderboard", callback_data: "leaderboard" }]
+        ]
+      }
+    });
+  }
+
+  // IMPORTANT: always at the end
+  bot.answerCallbackQuery(query.id);
+  });
 });
