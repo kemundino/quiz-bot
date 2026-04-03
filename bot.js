@@ -45,16 +45,31 @@ bot.onText(/\/start/, async (msg) => {
     current: 0
   }, { merge: true });
 
-  bot.sendMessage(chatId, "Welcome 👋 Choose an option:", {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: "▶️ Start Quiz", callback_data: "start_quiz" }],
-        [{ text: "📊 Leaderboard", callback_data: "leaderboard" }]
-      ]
-    }
-  });
+  // 👤 USER MENU
+  if (msg.from.id !== ADMIN_ID) {
+    bot.sendMessage(chatId, "Welcome 👋", {
+      reply_markup: {
+        keyboard: [
+          ["▶️ Start Quiz"],
+          ["🔙 Back"]
+        ],
+        resize_keyboard: true
+      }
+    });
+  } else {
+    // 👑 ADMIN MENU
+    bot.sendMessage(chatId, "👑 Admin Panel", {
+      reply_markup: {
+        keyboard: [
+          ["➕ Add Question", "📋 List Questions"],
+          ["✏️ Edit Question", "🗑 Delete Question"],
+          ["👥 Users", "📊 Leaderboard"]
+        ],
+        resize_keyboard: true
+      }
+    });
+  }
 });
-
 // =====================
 // QUIZ START
 // =====================
@@ -212,12 +227,70 @@ bot.on('message', async (msg) => {
   const userId = msg.from.id;
   const text = msg.text;
 
-  if (!text || text.startsWith('/')) return;
+  if (!text) return;
 
   if (blockedUsers.has(chatId)) {
     return bot.sendMessage(chatId, "🚫 You are blocked.");
   }
+  // ================= USER BUTTONS =================
+if (text === "▶️ Start Quiz") {
+  await db.collection('users').doc(chatId).update({
+    current: 0,
+    score: 0
+  });
 
+  return sendQuestion(chatId);
+}
+
+if (text === "🔙 Back") {
+  return bot.sendMessage(chatId, "Main Menu:", {
+    reply_markup: {
+      keyboard: [
+        ["▶️ Start Quiz"],
+        ["🔙 Back"]
+      ],
+      resize_keyboard: true
+    }
+  });
+}
+if (userId === ADMIN_ID) {
+
+  if (text === "➕ Add Question") {
+    adminState[chatId] = { step: 1 };
+    return bot.sendMessage(chatId, "Send question:");
+  }
+
+  if (text === "📋 List Questions") {
+    const snapshot = await db.collection('questions').get();
+
+    let textMsg = "📋 Questions:\n\n";
+    snapshot.docs.forEach((doc, i) => {
+      textMsg += `${i}. ${doc.data().question}\n`;
+    });
+
+    return bot.sendMessage(chatId, textMsg);
+  }
+
+  if (text === "👥 Users") {
+    const snapshot = await db.collection('users').get();
+    return bot.sendMessage(chatId, `👥 Total users: ${snapshot.size}`);
+  }
+
+  if (text === "📊 Leaderboard") {
+  const snapshot = await db.collection('users').get();
+  const users = snapshot.docs.map(doc => doc.data());
+
+  const sorted = users.sort((a, b) => (b.bestScore || 0) - (a.bestScore || 0)).slice(0, 5);
+
+  let textMsg = "🏆 Leaderboard:\n\n";
+  sorted.forEach((u, i) => {
+    textMsg += `${i + 1}. ${u.firstName || "User"} (@${u.username || ""}) → ${u.bestScore || 0}\n`;
+  });
+
+  return bot.sendMessage(chatId, textMsg);
+}
+
+}
   // Update user info
   await db.collection('users').doc(chatId).set({
     username: msg.from.username || "",
