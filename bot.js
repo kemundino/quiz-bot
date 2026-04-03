@@ -14,6 +14,7 @@ const bot = new TelegramBot(token, { polling: true });
 // FIRESTORE SETUP
 // =====================
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
+serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
