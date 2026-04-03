@@ -487,15 +487,7 @@ bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id.toString();
   const data = query.data;
 
-  // START QUIZ
-  if (data === "start_quiz") {
-    await db.collection('users').doc(chatId).update({
-      current: 0,
-      score: 0
-    });
 
-    sendQuestion(chatId);
-  }
 if (data.startsWith("q_")) {
   const id = data.split("_")[1];
 
