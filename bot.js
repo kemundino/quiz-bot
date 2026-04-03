@@ -1,6 +1,6 @@
 const TelegramBot = require('node-telegram-bot-api');
-const fs = require('fs');
 const express = require('express');
+const admin = require('firebase-admin');
 
 // =====================
 // CONFIG
@@ -10,40 +10,21 @@ const ADMIN_ID = 1983262664;
 
 const bot = new TelegramBot(token, { polling: true });
 
-console.log("✅ Bot is running...");
+// =====================
+// FIRESTORE SETUP
+// =====================
+const serviceAccount = require('./firebase-key.json');
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
+const db = admin.firestore();
+
+console.log("🔥 Bot + Firestore running...");
 
 // =====================
-// FILES
-// =====================
-const USERS_FILE = './users.json';
-const QUESTIONS_FILE = './questions.json';
-
-// Load users
-let users = {};
-if (fs.existsSync(USERS_FILE)) {
-  users = JSON.parse(fs.readFileSync(USERS_FILE));
-} else {
-  fs.writeFileSync(USERS_FILE, JSON.stringify({}));
-}
-
-// Load questions
-let questions = [];
-if (fs.existsSync(QUESTIONS_FILE)) {
-  questions = JSON.parse(fs.readFileSync(QUESTIONS_FILE));
-}
-
-// Save users
-function saveUsers() {
-  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-}
-
-// Save questions
-function saveQuestions() {
-  fs.writeFileSync(QUESTIONS_FILE, JSON.stringify(questions, null, 2));
-}
-
-// =====================
-// ADMIN STATE
+// STATE
 // =====================
 let adminState = {};
 let blockedUsers = new Set();
@@ -51,54 +32,62 @@ let blockedUsers = new Set();
 // =====================
 // START
 // =====================
-bot.onText(/\/start/, (msg) => {
-  const chatId = msg.chat.id;
+bot.onText(/\/start/, async (msg) => {
+  const chatId = msg.chat.id.toString();
 
-  if (!users[chatId]) {
-    users[chatId] = {
-      current: 0,
-      score: 0,
-      bestScore: 0,
-      username: msg.from.username || "",
-      firstName: msg.from.first_name || ""
-    };
-  }
-
-  saveUsers();
+  await db.collection('users').doc(chatId).set({
+    chatId,
+    username: msg.from.username || "",
+    firstName: msg.from.first_name || "",
+    score: 0,
+    bestScore: 0,
+    current: 0
+  }, { merge: true });
 
   bot.sendMessage(chatId, "Welcome!\nType /quiz to start.");
 });
 
 // =====================
-// QUIZ
+// QUIZ START
 // =====================
-bot.onText(/\/quiz/, (msg) => {
-  const chatId = msg.chat.id;
+bot.onText(/\/quiz/, async (msg) => {
+  const chatId = msg.chat.id.toString();
 
-  if (!users[chatId]) return;
-
-  users[chatId].current = 0;
-  users[chatId].score = 0;
+  await db.collection('users').doc(chatId).update({
+    current: 0,
+    score: 0
+  });
 
   sendQuestion(chatId);
 });
 
-function sendQuestion(chatId) {
-  const user = users[chatId];
+// =====================
+// SEND QUESTION
+// =====================
+async function sendQuestion(chatId) {
+  const userDoc = await db.collection('users').doc(chatId).get();
+  const user = userDoc.data();
+
+  const snapshot = await db.collection('questions').get();
+  const questions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
   const q = questions[user.current];
 
   if (!q) {
-    if (user.score > (user.bestScore || 0)) {
-      user.bestScore = user.score;
+    let best = user.bestScore || 0;
+
+    if (user.score > best) {
+      best = user.score;
     }
 
-    saveUsers();
+    await db.collection('users').doc(chatId).update({
+      bestScore: best
+    });
 
-    bot.sendMessage(
+    return bot.sendMessage(
       chatId,
-      `✅ Finished!\nScore: ${user.score}/${questions.length}\n🏆 Best: ${user.bestScore}`
+      `✅ Finished!\nScore: ${user.score}/${questions.length}\n🏆 Best: ${best}`
     );
-    return;
   }
 
   bot.sendPoll(chatId, q.question, q.options, {
@@ -108,25 +97,38 @@ function sendQuestion(chatId) {
   });
 }
 
-bot.on('poll_answer', (answer) => {
-  const userId = answer.user.id;
+// =====================
+// HANDLE ANSWER
+// =====================
+bot.on('poll_answer', async (answer) => {
+  const userId = answer.user.id.toString();
 
-  if (!users[userId]) return;
+  const userRef = db.collection('users').doc(userId);
+  const userDoc = await userRef.get();
 
-  const user = users[userId];
-  const selected = answer.option_ids[0];
+  if (!userDoc.exists) return;
+
+  const user = userDoc.data();
+
+  const snapshot = await db.collection('questions').get();
+  const questions = snapshot.docs.map(doc => doc.data());
+
   const q = questions[user.current];
+  const selected = answer.option_ids[0];
 
-  if (selected === q.correct) user.score++;
+  let newScore = user.score;
+  if (selected === q.correct) newScore++;
 
-  user.current++;
-  saveUsers();
+  await userRef.update({
+    score: newScore,
+    current: user.current + 1
+  });
 
   setTimeout(() => sendQuestion(userId), 1000);
 });
 
 // =====================
-// ADMIN COMMANDS
+// ADMIN ADD QUESTION
 // =====================
 bot.onText(/\/addquestion/, (msg) => {
   if (msg.from.id !== ADMIN_ID) return;
@@ -135,95 +137,86 @@ bot.onText(/\/addquestion/, (msg) => {
   bot.sendMessage(msg.chat.id, "📝 Send the question:");
 });
 
-bot.onText(/\/editquestion (\d+)/, (msg, match) => {
+// =====================
+// ADMIN EDIT
+// =====================
+bot.onText(/\/editquestion (\d+)/, async (msg, match) => {
   if (msg.from.id !== ADMIN_ID) return;
 
   const index = parseInt(match[1]);
+
+  const snapshot = await db.collection('questions').get();
+  const questions = snapshot.docs;
+
   if (!questions[index]) return bot.sendMessage(msg.chat.id, "Invalid index");
 
-  adminState[msg.chat.id] = { step: 1, editIndex: index };
+  adminState[msg.chat.id] = {
+    step: 1,
+    editId: questions[index].id
+  };
+
   bot.sendMessage(msg.chat.id, "✏️ Send new question:");
 });
 
-bot.onText(/\/deletequestion (\d+)/, (msg, match) => {
+// =====================
+// DELETE QUESTION
+// =====================
+bot.onText(/\/deletequestion (\d+)/, async (msg, match) => {
   if (msg.from.id !== ADMIN_ID) return;
 
   const index = parseInt(match[1]);
-  if (!questions[index]) return bot.sendMessage(msg.chat.id, "Invalid index");
 
-  const deleted = questions.splice(index, 1);
-  saveQuestions();
+  const snapshot = await db.collection('questions').get();
+  const docs = snapshot.docs;
 
-  bot.sendMessage(msg.chat.id, `Deleted: ${deleted[0].question}`);
+  if (!docs[index]) return bot.sendMessage(msg.chat.id, "Invalid index");
+
+  await db.collection('questions').doc(docs[index].id).delete();
+
+  bot.sendMessage(msg.chat.id, "🗑 Question deleted");
 });
 
-bot.onText(/\/listquestions/, (msg) => {
+// =====================
+// LIST QUESTIONS
+// =====================
+bot.onText(/\/listquestions/, async (msg) => {
   if (msg.from.id !== ADMIN_ID) return;
 
+  const snapshot = await db.collection('questions').get();
+
   let text = "📋 Questions:\n\n";
-  questions.forEach((q, i) => text += `${i}. ${q.question}\n`);
 
-  bot.sendMessage(msg.chat.id, text);
-});
-
-// =====================
-// LEADERBOARD
-// =====================
-bot.onText(/\/leaderboard/, (msg) => {
-  const sorted = Object.entries(users)
-    .sort((a, b) => (b[1].bestScore || 0) - (a[1].bestScore || 0))
-    .slice(0, 5);
-
-  let text = "🏆 Leaderboard:\n\n";
-
-  sorted.forEach((u, i) => {
-    const data = u[1];
-    const name = data.firstName || "User";
-    const username = data.username ? `(@${data.username})` : "";
-
-    text += `${i + 1}. ${name} ${username} → ${data.bestScore}\n`;
+  snapshot.docs.forEach((doc, i) => {
+    text += `${i}. ${doc.data().question}\n`;
   });
 
   bot.sendMessage(msg.chat.id, text);
 });
 
 // =====================
-// USERS
+// MESSAGE HANDLER
 // =====================
-bot.onText(/\/users/, (msg) => {
-  if (msg.from.id !== ADMIN_ID) return;
-
-  bot.sendMessage(msg.chat.id, `👥 Total users: ${Object.keys(users).length}`);
-});
-
-// =====================
-// MESSAGE HANDLER (ONLY ONE)
-// =====================
-bot.on('message', (msg) => {
-  const chatId = msg.chat.id;
+bot.on('message', async (msg) => {
+  const chatId = msg.chat.id.toString();
   const userId = msg.from.id;
   const text = msg.text;
 
   if (!text || text.startsWith('/')) return;
 
-  if (blockedUsers.has(userId.toString())) {
+  if (blockedUsers.has(chatId)) {
     return bot.sendMessage(chatId, "🚫 You are blocked.");
   }
 
-  // Ensure user exists
-  if (!users[chatId]) {
-    users[chatId] = { current: 0, score: 0, bestScore: 0 };
-  }
-
   // Update user info
-  users[chatId].username = msg.from.username || "";
-  users[chatId].firstName = msg.from.first_name || "";
-  saveUsers();
+  await db.collection('users').doc(chatId).set({
+    username: msg.from.username || "",
+    firstName: msg.from.first_name || ""
+  }, { merge: true });
 
-  const state = adminState[chatId];
+  const state = adminState[msg.chat.id];
 
-  // ===== ADD QUESTION =====
-  if (userId === ADMIN_ID && state && !state.editIndex) {
+  // ===== ADD =====
+  if (userId === ADMIN_ID && state && !state.editId) {
     if (state.step === 1) {
       state.question = text;
       state.step = 2;
@@ -233,27 +226,23 @@ bot.on('message', (msg) => {
     if (state.step === 2) {
       state.options = text.split(",");
       state.step = 3;
-      return bot.sendMessage(chatId, "Correct option index (0-3):");
+      return bot.sendMessage(chatId, "Correct index (0-3):");
     }
 
     if (state.step === 3) {
-      state.correct = parseInt(text);
-
-      questions.push({
+      await db.collection('questions').add({
         question: state.question,
         options: state.options,
-        correct: state.correct
+        correct: parseInt(text)
       });
 
-      saveQuestions();
-      delete adminState[chatId];
-
+      delete adminState[msg.chat.id];
       return bot.sendMessage(chatId, "✅ Question added!");
     }
   }
 
-  // ===== EDIT QUESTION =====
-  if (userId === ADMIN_ID && state && state.editIndex !== undefined) {
+  // ===== EDIT =====
+  if (userId === ADMIN_ID && state && state.editId) {
     if (state.step === 1) {
       state.question = text;
       state.step = 2;
@@ -267,15 +256,13 @@ bot.on('message', (msg) => {
     }
 
     if (state.step === 3) {
-      questions[state.editIndex] = {
+      await db.collection('questions').doc(state.editId).update({
         question: state.question,
         options: state.options,
         correct: parseInt(text)
-      };
+      });
 
-      saveQuestions();
-      delete adminState[chatId];
-
+      delete adminState[msg.chat.id];
       return bot.sendMessage(chatId, "✅ Updated!");
     }
   }
@@ -290,7 +277,26 @@ bot.on('message', (msg) => {
 });
 
 // =====================
-// EXPRESS SERVER
+// LEADERBOARD
+// =====================
+bot.onText(/\/leaderboard/, async (msg) => {
+  const snapshot = await db.collection('users').get();
+
+  const users = snapshot.docs.map(doc => doc.data());
+
+  const sorted = users.sort((a, b) => (b.bestScore || 0) - (a.bestScore || 0)).slice(0, 5);
+
+  let text = "🏆 Leaderboard:\n\n";
+
+  sorted.forEach((u, i) => {
+    text += `${i + 1}. ${u.firstName || "User"} (@${u.username || ""}) → ${u.bestScore || 0}\n`;
+  });
+
+  bot.sendMessage(msg.chat.id, text);
+});
+
+// =====================
+// EXPRESS (Render fix)
 // =====================
 const app = express();
 
