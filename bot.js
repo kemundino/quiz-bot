@@ -263,20 +263,27 @@ bot.on('message', async (msg) => {
     }
 
     if (text === "📊 Leaderboard") {
-      const snapshot = await db.collection('users').get();
-      const users = snapshot.docs.map(doc => doc.data());
+  const snapshot = await db.collection('users')
+    .orderBy('bestScore', 'desc')
+    .limit(10)
+    .get();
 
-      const sorted = users
-        .sort((a, b) => (b.bestScore || 0) - (a.bestScore || 0))
-        .slice(0, 5);
+  if (snapshot.empty) {
+    return bot.sendMessage(chatId, "No users found.");
+  }
 
-      let msgText = "🏆 Leaderboard:\n\n";
-      sorted.forEach((u, i) => {
-        msgText += `${i + 1}. ${u.firstName || "User"} → ${u.bestScore || 0}\n`;
-      });
+  let msgText = "🏆 Leaderboard:\n\n";
+  let rank = 1;
 
-      return bot.sendMessage(chatId, msgText);
-    }
+  snapshot.forEach(doc => {
+    const u = doc.data();
+
+    msgText += `${rank}. ${u.firstName || "User"} → ${u.bestScore || 0}\n`;
+    rank++;
+  });
+
+  return bot.sendMessage(chatId, msgText);
+}
 
     // =====================
     // ADD FLOW
