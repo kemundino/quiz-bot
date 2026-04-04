@@ -8,7 +8,8 @@ const admin = require('firebase-admin');
 const token = process.env.TOKEN;
 const ADMIN_ID = 1983262664;
 
-const bot = new TelegramBot(token, { polling: true });
+const bot = new TelegramBot(token);
+bot.setWebHook(`https://quiz-bot-vxyx.onrender.com/bot${token}`);
 
 // =====================
 // FIRESTORE SETUP
@@ -70,21 +71,6 @@ bot.onText(/\/start/, async (msg) => {
     });
   }
 });
-// =====================
-// QUIZ START
-// =====================
-bot.onText(/\/quiz/, async (msg) => {
-  const chatId = msg.chat.id.toString();
-
-  await db.collection('users').doc(chatId).update({
-    current: 0,
-    score: 0
-  });
-
-  sendQuestion(chatId);
-});
-
-// =====================
 // SEND QUESTION
 // =====================
 async function sendQuestion(chatId) {
@@ -96,6 +82,15 @@ async function sendQuestion(chatId) {
     id: doc.id,
     ...doc.data()
   }));
+
+     if (!user || user.current === undefined) {
+  await db.collection('users').doc(chatId).set({
+    current: 0,
+    score: 0
+  }, { merge: true });
+
+  return sendQuestion(chatId);
+}
 
   const q = questions[user.current];
 
@@ -166,12 +161,7 @@ bot.on('poll_answer', async (answer) => {
 // =====================
 // ADMIN ADD QUESTION
 // =====================
-bot.onText(/\/addquestion/, (msg) => {
-  if (msg.from.id !== ADMIN_ID) return;
 
-  adminState[msg.chat.id] = { step: 1 };
-  bot.sendMessage(msg.chat.id, "📝 Send the question:");
-});
 
 // =====================
 // ADMIN EDIT
@@ -428,16 +418,6 @@ bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id.toString();
   const data = query.data;
 
-  // USER ACTIONS
-  if (data === "start_quiz") {
-    await db.collection('users').doc(chatId).update({
-      current: 0,
-      score: 0
-    });
-
-    sendQuestion(chatId);
-  }
-
   if (data === "leaderboard") {
     const snapshot = await db.collection('users').get();
     const users = snapshot.docs.map(doc => doc.data());
@@ -460,7 +440,7 @@ bot.on('callback_query', async (query) => {
     }
 
     if (data === "list_q") {
-      const snapshot = await db.collection('questions').get();
+      const snapshot = await db.collection('questions').orderBy(admin.firestore.FieldPath.documentId()).get();
 
       let text = "📋 Questions:\n\n";
       snapshot.docs.forEach((doc, i) => {
@@ -483,10 +463,6 @@ bot.on('callback_query', async (query) => {
       bot.sendMessage(chatId, "Send:\n/deletequestion 0");
     }
   }
-  bot.on('callback_query', async (query) => {
-  const chatId = query.message.chat.id.toString();
-  const data = query.data;
-
 
 if (data.startsWith("q_")) {
   const id = data.split("_")[1];
@@ -547,5 +523,5 @@ if (data.startsWith("edit_")) {
 
   // IMPORTANT: always at the end
   bot.answerCallbackQuery(query.id);
-  });
+ 
 });
