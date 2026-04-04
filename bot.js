@@ -199,7 +199,8 @@ async function saveUserMessage(userId, username, firstName, message, messageId) 
     timestamp: admin.firestore.FieldValue.serverTimestamp(),
     status: "unread",
     reply: null,
-    repliedAt: null
+    repliedAt: null,
+    repliedBy: null
   });
   return messageRef.id;
 }
@@ -217,11 +218,12 @@ async function getMessages(status = null) {
 }
 
 // Update message status
-async function updateMessageStatus(messageId, status, reply = null) {
+async function updateMessageStatus(messageId, status, reply = null, adminId = null) {
   const updateData = { status: status };
   if (reply) {
     updateData.reply = reply;
     updateData.repliedAt = admin.firestore.FieldValue.serverTimestamp();
+    updateData.repliedBy = adminId;
   }
   await db.collection('contact_messages').doc(messageId).update(updateData);
 }
@@ -229,6 +231,13 @@ async function updateMessageStatus(messageId, status, reply = null) {
 // Delete message
 async function deleteMessage(messageId) {
   await db.collection('contact_messages').doc(messageId).delete();
+}
+
+// Get single message
+async function getMessage(messageId) {
+  const messageDoc = await db.collection('contact_messages').doc(messageId).get();
+  if (!messageDoc.exists) return null;
+  return { id: messageDoc.id, ...messageDoc.data() };
 }
 
 // =====================
@@ -275,7 +284,6 @@ async function startQuiz(chatId) {
 // =====================
 function getUniqueCategories() {
   const categories = [...new Set(questionsCache.map(q => q.category).filter(Boolean))];
-  console.log("Available categories:", categories);
   return categories;
 }
 
@@ -420,7 +428,7 @@ function getRankTitle(percentage) {
 }
 
 // =====================
-// SHOW USER STATS
+// SHOW USER STATS (PRIVATE - ONLY USER'S OWN DATA)
 // =====================
 async function showUserStats(chatId) {
   const userRef = db.collection('users').doc(chatId);
@@ -435,6 +443,7 @@ async function showUserStats(chatId) {
   const totalQuestions = questions.length;
   const percentage = user.bestScore ? Math.round((user.bestScore / totalQuestions) * 100) : 0;
   
+  // Only show user's own data - no other users' info
   const statsMessage = `📊 **Your Statistics**\n\n` +
     `👤 **Name:** ${user.firstName || 'Anonymous'}\n` +
     `📚 **Category:** ${user.category || 'Not selected'}\n` +
@@ -451,7 +460,7 @@ async function showUserStats(chatId) {
 }
 
 // =====================
-// SHOW LEADERBOARD
+// SHOW LEADERBOARD (ONLY SHOWS NAMES AND SCORES, NO OTHER DETAILS)
 // =====================
 async function showLeaderboard(chatId, isAdmin = false) {
   const snapshot = await db.collection('users')
@@ -470,42 +479,41 @@ async function showLeaderboard(chatId, isAdmin = false) {
     return;
   }
   
-  let leaderboard = "🏆 **Global Leaderboard** 🏆\n\n";
+  let leaderboard = "🏆 **Top 10 Players** 🏆\n\n";
   
   snapshot.docs.forEach((doc, index) => {
     const user = doc.data();
     const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : "📌";
-    const name = user.firstName || user.username || 'Anonymous';
+    // Only show first name or username, no IDs or other sensitive info
+    const name = user.firstName || user.username || 'Player';
     leaderboard += `${medal} ${index + 1}. ${name} - **${user.bestScore}** points\n`;
   });
   
+  // Get user's own rank without showing others' details
   const userRef = db.collection('users').doc(chatId);
   const userDoc = await userRef.get();
   
-  if (userDoc.exists) {
+  if (userDoc.exists && !isAdmin) {
     const user = userDoc.data();
-    const allUsers = await db.collection('users')
-      .where('bestScore', '>', 0)
-      .orderBy('bestScore', 'desc')
-      .get();
-    
-    let userRank = 1;
-    for (const doc of allUsers.docs) {
-      if (doc.id === chatId) break;
-      userRank++;
-    }
-    
     if (user.bestScore > 0) {
+      const allUsers = await db.collection('users')
+        .where('bestScore', '>', 0)
+        .orderBy('bestScore', 'desc')
+        .get();
+      
+      let userRank = 1;
+      for (const doc of allUsers.docs) {
+        if (doc.id === chatId) break;
+        userRank++;
+      }
+      
       leaderboard += `\n📊 **Your Rank:** #${userRank}\n` +
         `🎯 **Your Best:** ${user.bestScore} points`;
     }
   }
   
-  if (isAdmin) {
-    await bot.sendMessage(chatId, leaderboard, { parse_mode: 'Markdown', ...getAdminKeyboard() });
-  } else {
-    await bot.sendMessage(chatId, leaderboard, { parse_mode: 'Markdown', ...getMainKeyboard() });
-  }
+  const keyboard = isAdmin ? getAdminKeyboard() : getMainKeyboard();
+  await bot.sendMessage(chatId, leaderboard, { parse_mode: 'Markdown', ...keyboard });
 }
 
 // =====================
@@ -540,7 +548,7 @@ async function showAbout(chatId) {
 }
 
 // =====================
-// SHOW ALL USERS FOR ADMIN
+// SHOW ALL USERS FOR ADMIN (ONLY ADMIN CAN SEE THIS)
 // =====================
 async function showAllUsers(chatId) {
   const snapshot = await db.collection('users').get();
@@ -585,7 +593,7 @@ async function showAdminMessages(chatId) {
   
   for (let i = 0; i < Math.min(messages.length, 10); i++) {
     const msg = messages[i];
-    const statusIcon = msg.status === "unread" ? "🔴" : "✅";
+    const statusIcon = msg.status === "unread" ? "🔴" : msg.status === "replied" ? "✅" : "📖";
     const preview = msg.message.substring(0, 40);
     messageText += `${statusIcon} **${i + 1}.** From: ${msg.firstName}\n`;
     messageText += `   📝 ${preview}...\n`;
@@ -594,19 +602,22 @@ async function showAdminMessages(chatId) {
   
   if (messages.length > 10) {
     messageText += `\n📌 Showing 10 of ${messages.length} messages\n`;
-    messageText += `Use /viewmessage <message_id> to view full message\n`;
-    messageText += `Use /reply <message_id> <your reply> to respond\n`;
-    messageText += `Use /deletemessage <message_id> to delete\n`;
   }
   
-  await bot.sendMessage(chatId, messageText, { 
-    parse_mode: 'Markdown',
+  // Create inline keyboard for message actions
+  const inlineKeyboard = {
     reply_markup: {
       inline_keyboard: [
         [{ text: "📋 View All Messages", callback_data: "view_all_messages" }],
+        [{ text: "💬 Reply to Last Message", callback_data: `reply_${messages[0].id}` }],
         [{ text: "🔙 Back to Admin Menu", callback_data: "back_to_admin" }]
       ]
     }
+  };
+  
+  await bot.sendMessage(chatId, messageText, { 
+    parse_mode: 'Markdown',
+    ...inlineKeyboard
   });
 }
 
@@ -614,13 +625,11 @@ async function showAdminMessages(chatId) {
 // VIEW SINGLE MESSAGE
 // =====================
 async function viewMessage(adminChatId, messageId) {
-  const messageDoc = await db.collection('contact_messages').doc(messageId).get();
+  const msg = await getMessage(messageId);
   
-  if (!messageDoc.exists) {
+  if (!msg) {
     return bot.sendMessage(adminChatId, "❌ Message not found.", getAdminKeyboard());
   }
-  
-  const msg = messageDoc.data();
   
   // Mark as read
   if (msg.status === "unread") {
@@ -632,8 +641,7 @@ async function viewMessage(adminChatId, messageId) {
     `🆔 **User ID:** \`${msg.userId}\`\n` +
     `📅 **Time:** ${msg.timestamp?.toDate().toLocaleString() || 'Unknown'}\n` +
     `📝 **Message:**\n${msg.message}\n\n` +
-    `💬 **Reply Status:** ${msg.reply ? '✅ Replied' : '❌ Not replied yet'}\n\n` +
-    `To reply, send:\n\`/reply ${messageId} Your message here\``;
+    `💬 **Reply Status:** ${msg.reply ? '✅ Replied' : '❌ Not replied yet'}\n\n`;
   
   const replyKeyboard = {
     reply_markup: {
@@ -653,42 +661,51 @@ async function viewMessage(adminChatId, messageId) {
 }
 
 // =====================
-// REPLY TO USER
+// REPLY TO USER (FIXED)
 // =====================
 async function replyToUser(adminChatId, messageId, replyText) {
-  const messageDoc = await db.collection('contact_messages').doc(messageId).get();
-  
-  if (!messageDoc.exists) {
-    return bot.sendMessage(adminChatId, "❌ Message not found.", getAdminKeyboard());
-  }
-  
-  const msg = messageDoc.data();
-  
-  // Send reply to user
   try {
-    const replyMessage = `📩 **Reply from Admin**\n\n` +
-      `**Your message:** ${msg.message}\n\n` +
-      `**Admin's response:**\n${replyText}\n\n` +
-      `💡 You can reply to this message by sending another message using the Contact Admin button.`;
+    const msg = await getMessage(messageId);
     
-    await bot.sendMessage(msg.userId, replyMessage, { parse_mode: 'Markdown' });
+    if (!msg) {
+      return bot.sendMessage(adminChatId, "❌ Message not found.", getAdminKeyboard());
+    }
     
-    // Update message status
-    await updateMessageStatus(messageId, "replied", replyText);
-    
-    await bot.sendMessage(adminChatId, 
-      `✅ **Reply sent successfully!**\n\n` +
-      `To: ${msg.firstName}\n` +
-      `Reply: ${replyText}`,
-      getAdminKeyboard()
-    );
+    // Send reply to user
+    try {
+      const replyMessage = `📩 **Reply from Admin**\n\n` +
+        `**Your message:** ${msg.message}\n\n` +
+        `**Admin's response:**\n${replyText}\n\n` +
+        `💡 You can reply to this message by using the "Contact Admin" button.`;
+      
+      await bot.sendMessage(msg.userId, replyMessage, { parse_mode: 'Markdown' });
+      
+      // Update message status
+      await updateMessageStatus(messageId, "replied", replyText, adminChatId);
+      
+      // Get admin info
+      const adminInfo = await db.collection('users').doc(adminChatId).get();
+      const adminName = adminInfo.exists ? adminInfo.data().firstName : 'Admin';
+      
+      await bot.sendMessage(adminChatId, 
+        `✅ **Reply sent successfully!**\n\n` +
+        `📨 To: ${msg.firstName}\n` +
+        `💬 Reply: ${replyText}\n\n` +
+        `The user will receive this message immediately.`,
+        { parse_mode: 'Markdown', ...getAdminKeyboard() }
+      );
+      
+    } catch (err) {
+      console.error("Reply error:", err);
+      await bot.sendMessage(adminChatId, 
+        `❌ Failed to send reply. User might have blocked the bot.\n\nError: ${err.message}`,
+        getAdminKeyboard()
+      );
+    }
     
   } catch (err) {
-    console.error("Reply error:", err);
-    await bot.sendMessage(adminChatId, 
-      `❌ Failed to send reply. User might have blocked the bot.\n\nError: ${err.message}`,
-      getAdminKeyboard()
-    );
+    console.error("Reply function error:", err);
+    await bot.sendMessage(adminChatId, "❌ Failed to process reply. Please try again.", getAdminKeyboard());
   }
 }
 
@@ -945,7 +962,7 @@ bot.onText(/\/categories/, async (msg) => {
 });
 
 // =====================
-// CALLBACK QUERY HANDLER
+// CALLBACK QUERY HANDLER (FIXED)
 // =====================
 bot.on('callback_query', async (callbackQuery) => {
   const chatId = callbackQuery.message.chat.id.toString();
@@ -968,20 +985,20 @@ bot.on('callback_query', async (callbackQuery) => {
     }
     
     let allMessages = "📩 **All Messages**\n\n";
-    for (let i = 0; i < messages.length; i++) {
+    for (let i = 0; i < Math.min(messages.length, 20); i++) {
       const msg = messages[i];
       const statusIcon = msg.status === "unread" ? "🔴" : msg.status === "replied" ? "✅" : "📖";
       allMessages += `${statusIcon} **${i + 1}.** ${msg.firstName}: ${msg.message.substring(0, 50)}...\n`;
       allMessages += `   🆔 \`${msg.id}\`\n\n`;
       
       if (allMessages.length > 3500) {
-        allMessages += `\n📌 And ${messages.length - i} more messages...`;
+        allMessages += `\n📌 And ${messages.length - i - 1} more messages...`;
         break;
       }
     }
     
     await bot.sendMessage(chatId, allMessages, { parse_mode: 'Markdown' });
-    await bot.sendMessage(chatId, "Use /viewmessage <id> to view full message", getAdminKeyboard());
+    await bot.sendMessage(chatId, "Use /viewmessage <id> to view full message\nUse /reply <id> <reply> to respond", getAdminKeyboard());
   }
   
   if (data === "back_to_admin") {
@@ -997,10 +1014,14 @@ bot.on('callback_query', async (callbackQuery) => {
   if (data.startsWith("reply_")) {
     const messageId = data.replace("reply_", "");
     await bot.answerCallbackQuery(callbackQuery.id);
+    
+    // Store the message ID for reply
     replyState[chatId] = { messageId: messageId };
+    
     await bot.sendMessage(chatId, 
       `💬 **Reply to Message**\n\n` +
-      `Send your reply message. The user will receive it immediately.\n\n` +
+      `Please send your reply message below. The user will receive it immediately.\n\n` +
+      `Message ID: \`${messageId}\`\n\n` +
       `To cancel, send /cancel_reply`,
       { parse_mode: 'Markdown' }
     );
@@ -1036,14 +1057,15 @@ bot.on('message', async (msg) => {
   }, { merge: true });
 
   // =====================
-  // HANDLE REPLY STATE FOR ADMIN
+  // HANDLE REPLY STATE FOR ADMIN (FIXED)
   // =====================
-  if (replyState[chatId]) {
+  if (replyState[chatId] && userId === ADMIN_ID) {
     if (text === '/cancel_reply') {
       delete replyState[chatId];
       return bot.sendMessage(chatId, "❌ Reply cancelled.", getAdminKeyboard());
     }
     
+    // Process the reply
     await replyToUser(chatId, replyState[chatId].messageId, text);
     delete replyState[chatId];
     return;
