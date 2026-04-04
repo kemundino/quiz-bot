@@ -40,6 +40,7 @@ let adminState = {};
 let editState = {};
 let broadcastState = {};
 let blockState = {};
+let replyState = {};
 let categoryManageState = {};
 let blockedUsers = new Set();
 let userTimers = {};
@@ -126,7 +127,7 @@ const getAdminKeyboard = () => ({
       ["📢 Broadcast", "👥 Users"],
       ["🚫 Block User", "✅ Unblock User"],
       ["📊 Leaderboard", "📈 Stats"],
-      ["🔙 Main Menu"]
+      ["📩 View Messages", "🔙 Main Menu"]
     ],
     resize_keyboard: true,
     input_field_placeholder: "Choose an option..."
@@ -152,7 +153,7 @@ const getMainKeyboard = () => ({
     keyboard: [
       ["🎯 Start Quiz", "📊 My Stats"],
       ["🏆 Leaderboard", "ℹ️ About"],
-      ["🔄 Change Category"]
+      ["🔄 Change Category", "📩 Contact Admin"]
     ],
     resize_keyboard: true,
     persistent: true,
@@ -180,6 +181,55 @@ const getQuizKeyboard = () => ({
     input_field_placeholder: "Quiz in progress..."
   }
 });
+
+// =====================
+// CONTACT MESSAGE FUNCTIONS
+// =====================
+
+// Save user message to Firebase
+async function saveUserMessage(userId, username, firstName, message, messageId) {
+  const messageRef = db.collection('contact_messages').doc();
+  await messageRef.set({
+    id: messageRef.id,
+    userId: userId,
+    username: username || "Unknown",
+    firstName: firstName || "Anonymous",
+    message: message,
+    messageId: messageId,
+    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    status: "unread",
+    reply: null,
+    repliedAt: null
+  });
+  return messageRef.id;
+}
+
+// Get all messages for admin
+async function getMessages(status = null) {
+  let query = db.collection('contact_messages').orderBy('timestamp', 'desc');
+  
+  if (status) {
+    query = query.where('status', '==', status);
+  }
+  
+  const snapshot = await query.get();
+  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+}
+
+// Update message status
+async function updateMessageStatus(messageId, status, reply = null) {
+  const updateData = { status: status };
+  if (reply) {
+    updateData.reply = reply;
+    updateData.repliedAt = admin.firestore.FieldValue.serverTimestamp();
+  }
+  await db.collection('contact_messages').doc(messageId).update(updateData);
+}
+
+// Delete message
+async function deleteMessage(messageId) {
+  await db.collection('contact_messages').doc(messageId).delete();
+}
 
 // =====================
 // START QUIZ
@@ -468,7 +518,8 @@ async function showAbout(chatId) {
     `• Timed questions (15 seconds each)\n` +
     `• Track your best scores\n` +
     `• Global leaderboard\n` +
-    `• Real-time feedback\n\n` +
+    `• Real-time feedback\n` +
+    `• Contact admin for support\n\n` +
     `📊 **How to Play:**\n` +
     `1. Select a category\n` +
     `2. Tap "Start Quiz"\n` +
@@ -479,7 +530,8 @@ async function showAbout(chatId) {
     `• Advanced (70%+) 🥇\n` +
     `• Intermediate (50%+) 🥈\n` +
     `• Beginner (<50%) 🥉\n\n` +
-    `💡 **Tip:** Practice makes perfect! Keep playing to improve your rank.`;
+    `💡 **Tip:** Practice makes perfect! Keep playing to improve your rank.\n\n` +
+    `📩 **Need help?** Use "Contact Admin" button to send us a message!`;
   
   await bot.sendMessage(chatId, aboutMessage, {
     parse_mode: 'Markdown',
@@ -513,6 +565,131 @@ async function showAllUsers(chatId) {
   await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
   await bot.sendMessage(chatId, "To block/unblock a user, use:\n`/block USER_ID`\n`/unblock USER_ID`\n\nOr use the Block/Unblock buttons.", 
     { parse_mode: 'Markdown', ...getAdminKeyboard() });
+}
+
+// =====================
+// SHOW MESSAGES FOR ADMIN
+// =====================
+async function showAdminMessages(chatId) {
+  const messages = await getMessages();
+  
+  if (messages.length === 0) {
+    return bot.sendMessage(chatId, "📭 No messages from users yet.", getAdminKeyboard());
+  }
+  
+  const unreadCount = messages.filter(m => m.status === "unread").length;
+  
+  let messageText = `📩 **User Messages**\n\n`;
+  messageText += `📊 Total: ${messages.length} | 🔴 Unread: ${unreadCount}\n\n`;
+  messageText += `Select a message to reply:\n\n`;
+  
+  for (let i = 0; i < Math.min(messages.length, 10); i++) {
+    const msg = messages[i];
+    const statusIcon = msg.status === "unread" ? "🔴" : "✅";
+    const preview = msg.message.substring(0, 40);
+    messageText += `${statusIcon} **${i + 1}.** From: ${msg.firstName}\n`;
+    messageText += `   📝 ${preview}...\n`;
+    messageText += `   🆔 \`${msg.id}\`\n\n`;
+  }
+  
+  if (messages.length > 10) {
+    messageText += `\n📌 Showing 10 of ${messages.length} messages\n`;
+    messageText += `Use /viewmessage <message_id> to view full message\n`;
+    messageText += `Use /reply <message_id> <your reply> to respond\n`;
+    messageText += `Use /deletemessage <message_id> to delete\n`;
+  }
+  
+  await bot.sendMessage(chatId, messageText, { 
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "📋 View All Messages", callback_data: "view_all_messages" }],
+        [{ text: "🔙 Back to Admin Menu", callback_data: "back_to_admin" }]
+      ]
+    }
+  });
+}
+
+// =====================
+// VIEW SINGLE MESSAGE
+// =====================
+async function viewMessage(adminChatId, messageId) {
+  const messageDoc = await db.collection('contact_messages').doc(messageId).get();
+  
+  if (!messageDoc.exists) {
+    return bot.sendMessage(adminChatId, "❌ Message not found.", getAdminKeyboard());
+  }
+  
+  const msg = messageDoc.data();
+  
+  // Mark as read
+  if (msg.status === "unread") {
+    await updateMessageStatus(messageId, "read");
+  }
+  
+  const messageText = `📨 **Message Details**\n\n` +
+    `👤 **From:** ${msg.firstName} (@${msg.username || 'No username'})\n` +
+    `🆔 **User ID:** \`${msg.userId}\`\n` +
+    `📅 **Time:** ${msg.timestamp?.toDate().toLocaleString() || 'Unknown'}\n` +
+    `📝 **Message:**\n${msg.message}\n\n` +
+    `💬 **Reply Status:** ${msg.reply ? '✅ Replied' : '❌ Not replied yet'}\n\n` +
+    `To reply, send:\n\`/reply ${messageId} Your message here\``;
+  
+  const replyKeyboard = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "💬 Reply to This Message", callback_data: `reply_${messageId}` }],
+        [{ text: "🗑 Delete", callback_data: `delete_${messageId}` }],
+        [{ text: "📩 View All Messages", callback_data: "view_all_messages" }],
+        [{ text: "🔙 Back", callback_data: "back_to_messages" }]
+      ]
+    }
+  };
+  
+  await bot.sendMessage(adminChatId, messageText, { 
+    parse_mode: 'Markdown',
+    ...replyKeyboard
+  });
+}
+
+// =====================
+// REPLY TO USER
+// =====================
+async function replyToUser(adminChatId, messageId, replyText) {
+  const messageDoc = await db.collection('contact_messages').doc(messageId).get();
+  
+  if (!messageDoc.exists) {
+    return bot.sendMessage(adminChatId, "❌ Message not found.", getAdminKeyboard());
+  }
+  
+  const msg = messageDoc.data();
+  
+  // Send reply to user
+  try {
+    const replyMessage = `📩 **Reply from Admin**\n\n` +
+      `**Your message:** ${msg.message}\n\n` +
+      `**Admin's response:**\n${replyText}\n\n` +
+      `💡 You can reply to this message by sending another message using the Contact Admin button.`;
+    
+    await bot.sendMessage(msg.userId, replyMessage, { parse_mode: 'Markdown' });
+    
+    // Update message status
+    await updateMessageStatus(messageId, "replied", replyText);
+    
+    await bot.sendMessage(adminChatId, 
+      `✅ **Reply sent successfully!**\n\n` +
+      `To: ${msg.firstName}\n` +
+      `Reply: ${replyText}`,
+      getAdminKeyboard()
+    );
+    
+  } catch (err) {
+    console.error("Reply error:", err);
+    await bot.sendMessage(adminChatId, 
+      `❌ Failed to send reply. User might have blocked the bot.\n\nError: ${err.message}`,
+      getAdminKeyboard()
+    );
+  }
 }
 
 // =====================
@@ -683,6 +860,7 @@ bot.onText(/\/start/, async (msg) => {
     `• Select a category to start\n` +
     `• Answer questions within 15 seconds\n` +
     `• Earn points and climb the ranks!\n\n` +
+    `📩 **Need help?** Use the "Contact Admin" button to send us a message!\n\n` +
     `Choose a category to begin your journey! 🚀`;
 
   if (userId !== ADMIN_ID) {
@@ -727,11 +905,114 @@ bot.onText(/\/unblock (.+)/, async (msg, match) => {
   await unblockUser(chatId, userIdToUnblock);
 });
 
+bot.onText(/\/reply (.+?) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id.toString();
+  const userId = msg.from.id;
+  
+  if (userId !== ADMIN_ID) return;
+  
+  const messageId = match[1];
+  const replyText = match[2];
+  await replyToUser(chatId, messageId, replyText);
+});
+
+bot.onText(/\/viewmessage (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id.toString();
+  const userId = msg.from.id;
+  
+  if (userId !== ADMIN_ID) return;
+  
+  const messageId = match[1];
+  await viewMessage(chatId, messageId);
+});
+
+bot.onText(/\/deletemessage (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id.toString();
+  const userId = msg.from.id;
+  
+  if (userId !== ADMIN_ID) return;
+  
+  const messageId = match[1];
+  await deleteMessage(messageId);
+  await bot.sendMessage(chatId, "✅ Message deleted successfully!", getAdminKeyboard());
+});
+
 bot.onText(/\/categories/, async (msg) => {
   const chatId = msg.chat.id.toString();
   const categories = getUniqueCategories();
   const message = `📚 **Available Categories:**\n\n${categories.map((c, i) => `${i+1}. ${c}`).join('\n')}\n\nTotal: ${categories.length}`;
   await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+});
+
+// =====================
+// CALLBACK QUERY HANDLER
+// =====================
+bot.on('callback_query', async (callbackQuery) => {
+  const chatId = callbackQuery.message.chat.id.toString();
+  const userId = callbackQuery.from.id;
+  const data = callbackQuery.data;
+  
+  // Only admin can use these
+  if (userId !== ADMIN_ID) {
+    await bot.answerCallbackQuery(callbackQuery.id, { text: "Only admin can use this!" });
+    return;
+  }
+  
+  if (data === "view_all_messages") {
+    await bot.answerCallbackQuery(callbackQuery.id);
+    const messages = await getMessages();
+    
+    if (messages.length === 0) {
+      await bot.sendMessage(chatId, "📭 No messages found.");
+      return;
+    }
+    
+    let allMessages = "📩 **All Messages**\n\n";
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      const statusIcon = msg.status === "unread" ? "🔴" : msg.status === "replied" ? "✅" : "📖";
+      allMessages += `${statusIcon} **${i + 1}.** ${msg.firstName}: ${msg.message.substring(0, 50)}...\n`;
+      allMessages += `   🆔 \`${msg.id}\`\n\n`;
+      
+      if (allMessages.length > 3500) {
+        allMessages += `\n📌 And ${messages.length - i} more messages...`;
+        break;
+      }
+    }
+    
+    await bot.sendMessage(chatId, allMessages, { parse_mode: 'Markdown' });
+    await bot.sendMessage(chatId, "Use /viewmessage <id> to view full message", getAdminKeyboard());
+  }
+  
+  if (data === "back_to_admin") {
+    await bot.answerCallbackQuery(callbackQuery.id);
+    await bot.sendMessage(chatId, "👑 Admin Panel:", getAdminKeyboard());
+  }
+  
+  if (data === "back_to_messages") {
+    await bot.answerCallbackQuery(callbackQuery.id);
+    await showAdminMessages(chatId);
+  }
+  
+  if (data.startsWith("reply_")) {
+    const messageId = data.replace("reply_", "");
+    await bot.answerCallbackQuery(callbackQuery.id);
+    replyState[chatId] = { messageId: messageId };
+    await bot.sendMessage(chatId, 
+      `💬 **Reply to Message**\n\n` +
+      `Send your reply message. The user will receive it immediately.\n\n` +
+      `To cancel, send /cancel_reply`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+  
+  if (data.startsWith("delete_")) {
+    const messageId = data.replace("delete_", "");
+    await bot.answerCallbackQuery(callbackQuery.id);
+    await deleteMessage(messageId);
+    await bot.sendMessage(chatId, "✅ Message deleted successfully!");
+    await showAdminMessages(chatId);
+  }
 });
 
 // =====================
@@ -755,6 +1036,20 @@ bot.on('message', async (msg) => {
   }, { merge: true });
 
   // =====================
+  // HANDLE REPLY STATE FOR ADMIN
+  // =====================
+  if (replyState[chatId]) {
+    if (text === '/cancel_reply') {
+      delete replyState[chatId];
+      return bot.sendMessage(chatId, "❌ Reply cancelled.", getAdminKeyboard());
+    }
+    
+    await replyToUser(chatId, replyState[chatId].messageId, text);
+    delete replyState[chatId];
+    return;
+  }
+
+  // =====================
   // ADMIN HANDLERS
   // =====================
   if (userId === ADMIN_ID) {
@@ -765,10 +1060,17 @@ bot.on('message', async (msg) => {
       delete broadcastState[chatId];
       delete blockState[chatId];
       delete categoryManageState[chatId];
+      delete replyState[chatId];
       return bot.sendMessage(chatId, "👑 **Admin Panel**\n\nSelect an option to manage the bot:", {
         parse_mode: 'Markdown',
         ...getAdminKeyboard()
       });
+    }
+    
+    // Handle view messages
+    if (text === "📩 View Messages") {
+      await showAdminMessages(chatId);
+      return;
     }
     
     // Handle category-based question management
@@ -1119,12 +1421,15 @@ bot.on('message', async (msg) => {
       const totalQuestions = questionsCache.length;
       const avgScore = snapshot.docs.reduce((acc, doc) => acc + (doc.data().bestScore || 0), 0) / totalUsers || 0;
       
+      const messagesCount = (await db.collection('contact_messages').get()).size;
+      
       const statsMessage = `📊 *Bot Statistics*\n\n` +
         `👥 Total Users: ${totalUsers}\n` +
         `🚫 Blocked Users: ${blockedUsers.size}\n` +
         `📚 Total Questions: ${totalQuestions}\n` +
         `📈 Average Score: ${avgScore.toFixed(1)}\n` +
-        `🏆 Categories: ${getUniqueCategories().length}\n\n` +
+        `🏆 Categories: ${getUniqueCategories().length}\n` +
+        `📩 Contact Messages: ${messagesCount}\n\n` +
         `🟢 Status: Active ✅`;
       
       await bot.sendMessage(chatId, statsMessage, { parse_mode: 'Markdown', ...getAdminKeyboard() });
@@ -1195,6 +1500,61 @@ bot.on('message', async (msg) => {
   const categories = getUniqueCategories();
   const cleanCategory = text.replace(/^📚 /, '');
   
+  // Handle Contact Admin
+  if (text === "📩 Contact Admin") {
+    return bot.sendMessage(chatId, 
+      "📩 **Contact Admin**\n\n" +
+      "Please send your message below. The administrator will respond as soon as possible.\n\n" +
+      "You can ask questions, report issues, or give feedback.\n\n" +
+      "Type /cancel to cancel.",
+      { parse_mode: 'Markdown' }
+    ).then(() => {
+      // Set user in messaging mode
+      userSessions[chatId] = { ...userSessions[chatId], contactingAdmin: true };
+    });
+  }
+  
+  // Handle user sending message to admin
+  if (userSessions[chatId]?.contactingAdmin) {
+    if (text === '/cancel') {
+      delete userSessions[chatId].contactingAdmin;
+      return bot.sendMessage(chatId, "❌ Message cancelled.", getMainKeyboard());
+    }
+    
+    // Save message to database
+    const userData = await db.collection('users').doc(chatId).get();
+    const user = userData.data();
+    
+    await saveUserMessage(
+      chatId,
+      msg.from.username,
+      user.firstName,
+      text,
+      msg.message_id
+    );
+    
+    delete userSessions[chatId].contactingAdmin;
+    
+    await bot.sendMessage(chatId, 
+      "✅ **Message Sent!**\n\n" +
+      "Your message has been sent to the administrator. You will receive a reply soon.\n\n" +
+      "Thank you for reaching out! 🙏",
+      { parse_mode: 'Markdown', ...getMainKeyboard() }
+    );
+    
+    // Notify admin
+    await bot.sendMessage(ADMIN_ID, 
+      `📩 **New Message from User**\n\n` +
+      `👤 User: ${user.firstName} (@${msg.from.username || 'No username'})\n` +
+      `🆔 ID: ${chatId}\n` +
+      `📝 Message: ${text}\n\n` +
+      `Use /viewmessage to see all messages.`,
+      { parse_mode: 'Markdown' }
+    );
+    
+    return;
+  }
+  
   // Handle back to main menu from category selection
   if (text === "🔙 Back to Main Menu") {
     delete userSessions[chatId];
@@ -1231,7 +1591,7 @@ bot.on('message', async (msg) => {
   
   // Handle change category
   if (text === "🔄 Change Category") {
-    if (userSessions[chatId]) {
+    if (userSessions[chatId]?.quizActive) {
       await bot.sendMessage(chatId, "⚠️ Please end your current quiz before changing category.\nTap 'End Quiz' to stop.",
         getQuizKeyboard());
     } else {
