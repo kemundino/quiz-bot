@@ -138,7 +138,6 @@ async function sendQuestion(chatId) {
       return bot.sendMessage(chatId, "⚠️ Invalid question data in database.");
     }
 
-    // TIMER
     if (userTimers[chatId]) {
       clearTimeout(userTimers[chatId]);
     }
@@ -262,83 +261,112 @@ bot.on('message', async (msg) => {
       return bot.sendMessage(chatId, `👥 Total users: ${snapshot.size}`);
     }
 
+    // ✅ UPDATED LEADERBOARD
     if (text === "📊 Leaderboard") {
-  const snapshot = await db.collection('users')
-    .orderBy('bestScore', 'desc')
-    .limit(10)
-    .get();
+      const snapshot = await db.collection('users')
+        .orderBy('bestScore', 'desc')
+        .limit(10)
+        .get();
 
-  if (snapshot.empty) {
-    return bot.sendMessage(chatId, "No users found.");
-  }
-
-  let msgText = "🏆 Leaderboard:\n\n";
-  let rank = 1;
-
-  snapshot.forEach(doc => {
-    const u = doc.data();
-
-    msgText += `${rank}. ${u.firstName || "User"} → ${u.bestScore || 0}\n`;
-    rank++;
-  });
-
-  return bot.sendMessage(chatId, msgText);
-}
-
-    // =====================
-    // ADD FLOW
-    // =====================
-    const state = adminState[chatId];
-
-    if (state) {
-
-      if (state.step === 0) {
-        state.category = text;
-        state.step = 1;
-        return bot.sendMessage(chatId, "Send question:");
+      if (snapshot.empty) {
+        return bot.sendMessage(chatId, "No users found.");
       }
 
-      if (state.step === 1) {
-        state.question = text;
-        state.step = 2;
-        return bot.sendMessage(chatId, "Send options (A,B,C):");
+      let msgText = "🏆 Leaderboard:\n\n";
+      let rank = 1;
+
+      snapshot.forEach(doc => {
+        const u = doc.data();
+
+        const name =
+          u.username ? `@${u.username}` :
+          u.firstName ? u.firstName :
+          "User";
+
+        msgText += `${rank}. ${name} → ${u.bestScore || 0}\n`;
+        rank++;
+      });
+
+      return bot.sendMessage(chatId, msgText);
+    }
+
+    // =====================
+    // EDIT QUESTION
+    // =====================
+    if (text === "✏️ Edit Question") {
+      editState[chatId] = { step: 0 };
+      return bot.sendMessage(chatId, "Send question index to edit:");
+    }
+
+    const eState = editState[chatId];
+    if (eState) {
+
+      if (eState.step === 0) {
+        const index = parseInt(text);
+        const question = questionsCache[index];
+
+        if (!question) {
+          delete editState[chatId];
+          return bot.sendMessage(chatId, "❌ Invalid index");
+        }
+
+        eState.questionId = question.id;
+        eState.step = 1;
+
+        return bot.sendMessage(chatId, "Send new question:");
       }
 
-      if (state.step === 2) {
+      if (eState.step === 1) {
+        eState.question = text;
+        eState.step = 2;
+
+        return bot.sendMessage(chatId, "Send new options (A,B,C):");
+      }
+
+      if (eState.step === 2) {
         const options = text.split(",").map(o => o.trim()).filter(Boolean);
 
         if (options.length < 2) {
           return bot.sendMessage(chatId, "❌ At least 2 options required!");
         }
 
-        state.options = options;
-        state.step = 3;
+        eState.options = options;
+        eState.step = 3;
 
         return bot.sendMessage(chatId, `Correct index (0-${options.length - 1}):`);
       }
 
-      if (state.step === 3) {
-        const countSnapshot = await db.collection('questions').get();
-
-        await db.collection('questions').add({
-          question: state.question,
-          options: state.options,
-          correct: parseInt(text),
-          category: state.category,
-          order: countSnapshot.size
+      if (eState.step === 3) {
+        await db.collection('questions').doc(eState.questionId).update({
+          question: eState.question,
+          options: eState.options,
+          correct: parseInt(text)
         });
 
-        delete adminState[chatId];
+        delete editState[chatId];
         loadQuestions();
 
-        return bot.sendMessage(chatId, "✅ Question added!");
+        return bot.sendMessage(chatId, "✅ Question updated!");
       }
     }
 
     // =====================
-    // EDIT & DELETE omitted for brevity in this final block
-    // (already implemented earlier in your previous version)
+    // DELETE QUESTION
     // =====================
+    if (text === "🗑 Delete Question") {
+      return bot.sendMessage(chatId, "Send question index to delete:");
+    }
+
+    if (!isNaN(text)) {
+      const index = parseInt(text);
+      const question = questionsCache[index];
+
+      if (question) {
+        await db.collection('questions').doc(question.id).delete();
+        loadQuestions();
+        return bot.sendMessage(chatId, "🗑 Question deleted");
+      }
+    }
   }
 
   // FORWARD TO ADMIN
