@@ -20,7 +20,7 @@ app.use(express.json());
 const bot = new TelegramBot(token);
 
 // =====================
-// FIRESTORE SETUP
+// FIREBASE SETUP
 // =====================
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
@@ -37,6 +37,7 @@ console.log("🔥 Bot + Firestore running...");
 // STATE
 // =====================
 let adminState = {};
+let editState = {};
 let blockedUsers = new Set();
 
 // =====================
@@ -57,14 +58,14 @@ bot.setWebHook(WEBHOOK_URL)
   .catch(err => console.error("Webhook error:", err));
 
 // =====================
-// EXPRESS ROOT
+// ROOT
 // =====================
 app.get('/', (req, res) => {
   res.send("Bot is running ✅");
 });
 
 // =====================
-// START QUIZ FUNCTION
+// START QUIZ
 // =====================
 async function startQuiz(chatId) {
   await db.collection('users').doc(chatId).set({
@@ -114,8 +115,9 @@ async function sendQuestion(chatId) {
       );
     }
 
-    if (!q.options || q.options.length < 2) {
-      return bot.sendMessage(chatId, "⚠️ Invalid question data.");
+    // ✅ FIXED VALIDATION
+    if (!Array.isArray(q.options) || q.options.length < 2) {
+      return bot.sendMessage(chatId, "⚠️ Invalid question data in database.");
     }
 
     await bot.sendPoll(
@@ -160,7 +162,9 @@ bot.onText(/\/start/, async (msg) => {
     bot.sendMessage(chatId, "👑 Admin Panel", {
       reply_markup: {
         keyboard: [
-          ["➕ Add Question", "📋 List Questions"],
+          ["➕ Add Question", "✏️ Edit Question"],
+          ["🗑 Delete Question"],
+          ["📋 List Questions"],
           ["👥 Users", "📊 Leaderboard"]
         ],
         resize_keyboard: true
@@ -188,19 +192,23 @@ bot.on('message', async (msg) => {
     firstName: msg.from.first_name || ""
   }, { merge: true });
 
-  // USER ACTION
+  // USER
   if (text === "▶️ Start Quiz") {
     return startQuiz(chatId);
   }
 
-  // ADMIN ACTIONS
+  // =====================
+  // ADMIN
+  // =====================
   if (userId === ADMIN_ID) {
 
+    // ADD QUESTION
     if (text === "➕ Add Question") {
       adminState[chatId] = { step: 1 };
       return bot.sendMessage(chatId, "Send question:");
     }
 
+    // LIST QUESTIONS
     if (text === "📋 List Questions") {
       const snapshot = await db.collection('questions').get();
 
@@ -212,11 +220,13 @@ bot.on('message', async (msg) => {
       return bot.sendMessage(chatId, textMsg);
     }
 
+    // USERS
     if (text === "👥 Users") {
       const snapshot = await db.collection('users').get();
       return bot.sendMessage(chatId, `👥 Total users: ${snapshot.size}`);
     }
 
+    // LEADERBOARD
     if (text === "📊 Leaderboard") {
       const snapshot = await db.collection('users').get();
       const users = snapshot.docs.map(doc => doc.data());
@@ -233,6 +243,40 @@ bot.on('message', async (msg) => {
       return bot.sendMessage(chatId, textMsg);
     }
 
+    // EDIT QUESTION
+    if (text === "✏️ Edit Question") {
+      const snapshot = await db.collection('questions').get();
+
+      let msgText = "Send question number to edit:\n\n";
+      snapshot.docs.forEach((doc, i) => {
+        msgText += `${i}. ${doc.data().question}\n`;
+      });
+
+      editState[chatId] = { step: 1, questions: snapshot.docs };
+
+      return bot.sendMessage(chatId, msgText);
+    }
+
+    // DELETE QUESTION
+    if (text === "🗑 Delete Question") {
+      const snapshot = await db.collection('questions').get();
+
+      let msgText = "Send question number to delete:\n\n";
+      snapshot.docs.forEach((doc, i) => {
+        msgText += `${i}. ${doc.data().question}\n`;
+      });
+
+      adminState[chatId] = {
+        step: "delete",
+        questions: snapshot.docs
+      };
+
+      return bot.sendMessage(chatId, msgText);
+    }
+
+    // =====================
+    // ADD FLOW
+    // =====================
     const state = adminState[chatId];
 
     if (state) {
@@ -265,6 +309,76 @@ bot.on('message', async (msg) => {
         delete adminState[chatId];
         return bot.sendMessage(chatId, "✅ Question added!");
       }
+
+      // DELETE FLOW
+      if (state.step === "delete") {
+        const index = parseInt(text);
+
+        if (isNaN(index) || !state.questions[index]) {
+          return bot.sendMessage(chatId, "Invalid index.");
+        }
+
+        const doc = state.questions[index];
+
+        await db.collection('questions').doc(doc.id).delete();
+
+        delete adminState[chatId];
+        return bot.sendMessage(chatId, "🗑 Question deleted!");
+      }
+    }
+
+    // =====================
+    // EDIT FLOW
+    // =====================
+    const eState = editState[chatId];
+
+    if (eState) {
+      if (eState.step === 1) {
+        const index = parseInt(text);
+
+        if (isNaN(index) || !eState.questions[index]) {
+          return bot.sendMessage(chatId, "Invalid index.");
+        }
+
+        eState.selectedIndex = index;
+        eState.step = 2;
+
+        return bot.sendMessage(chatId, "Send new question text:");
+      }
+
+      if (eState.step === 2) {
+        eState.newQuestion = text;
+        eState.step = 3;
+
+        return bot.sendMessage(chatId, "Send new options (A,B,C):");
+      }
+
+      if (eState.step === 3) {
+        const options = text.split(",").map(o => o.trim()).filter(Boolean);
+
+        if (options.length < 2) {
+          return bot.sendMessage(chatId, "At least 2 options required.");
+        }
+
+        eState.options = options;
+        eState.step = 4;
+
+        return bot.sendMessage(chatId, "Send correct index:");
+      }
+
+      if (eState.step === 4) {
+        const correct = parseInt(text);
+        const doc = eState.questions[eState.selectedIndex];
+
+        await db.collection('questions').doc(doc.id).update({
+          question: eState.newQuestion,
+          options: eState.options,
+          correct: correct
+        });
+
+        delete editState[chatId];
+        return bot.sendMessage(chatId, "✅ Question updated!");
+      }
     }
   }
 
@@ -278,7 +392,7 @@ bot.on('message', async (msg) => {
 });
 
 // =====================
-// HANDLE POLL ANSWERS
+// POLL ANSWERS
 // =====================
 bot.on('poll_answer', async (answer) => {
   try {
@@ -321,7 +435,7 @@ bot.on('poll_answer', async (answer) => {
 });
 
 // =====================
-// START SERVER
+// SERVER START
 // =====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
