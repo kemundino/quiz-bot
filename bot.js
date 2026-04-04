@@ -98,8 +98,12 @@ async function startQuiz(chatId) {
 
   const category = user.category;
 
+  if (!category) {
+    return bot.sendMessage(chatId, "⚠️ Please select a category first.");
+  }
+
   const questions = questionsCache.filter(q =>
-    !category || q.category === category
+    q.category === category
   );
 
   if (questions.length === 0) {
@@ -145,7 +149,7 @@ async function sendQuestion(chatId) {
         `✅ Finished!\nScore: ${user.score}/${questions.length}`,
         {
           reply_markup: {
-            keyboard: [["▶️ Start Quiz"], ["📈 My Score"], ["🔙 Back"]],
+            keyboard: [["▶️ Start Quiz"], ["🔄 Change Category"], ["📈 My Score"]],
             resize_keyboard: true
           }
         }
@@ -202,11 +206,7 @@ bot.onText(/\/start/, async (msg) => {
 
     return bot.sendMessage(chatId, "Choose a category:", {
       reply_markup: {
-        keyboard: categories.map(c => [c]).concat([
-          ["▶️ Start Quiz"],
-          ["📈 My Score"],
-          ["🔙 Back"]
-        ]),
+        keyboard: categories.map(c => [c]),
         resize_keyboard: true
       }
     });
@@ -220,7 +220,7 @@ bot.onText(/\/start/, async (msg) => {
           ["📋 List Questions"],
           ["📢 Broadcast"],
           ["👥 Users", "📊 Leaderboard"],
-          ["🔙 Back"]
+          ["🔙 Cancel"]
         ],
         resize_keyboard: true
       }
@@ -248,43 +248,7 @@ bot.on('message', async (msg) => {
   }, { merge: true });
 
   // =====================
-  // GLOBAL BACK HANDLER (NEW)
-  // =====================
-  if (text === "🔙 Back" || text === "/back") {
-
-    delete adminState[chatId];
-    delete editState[chatId];
-
-    if (userId === ADMIN_ID) {
-      return bot.sendMessage(chatId, "👑 Admin Panel", {
-        reply_markup: {
-          keyboard: [
-            ["➕ Add Question", "✏️ Edit Question"],
-            ["🗑 Delete Question"],
-            ["📋 List Questions"],
-            ["📢 Broadcast"],
-            ["👥 Users", "📊 Leaderboard"],
-            ["🔙 Back"]
-          ],
-          resize_keyboard: true
-        }
-      });
-    } else {
-      return bot.sendMessage(chatId, "🏠 Main Menu", {
-        reply_markup: {
-          keyboard: [
-            ["▶️ Start Quiz"],
-            ["📈 My Score"],
-            ["🔙 Back"]
-          ],
-          resize_keyboard: true
-        }
-      });
-    }
-  }
-
-  // =====================
-  // CATEGORY SELECTION (USER)
+  // CATEGORY SELECTION
   // =====================
   const categories = [...new Set(questionsCache.map(q => q.category).filter(Boolean))];
 
@@ -293,12 +257,32 @@ bot.on('message', async (msg) => {
       category: text
     }, { merge: true });
 
-    return bot.sendMessage(chatId, `✅ Category selected: ${text}`);
+    return bot.sendMessage(chatId, `✅ Category selected: ${text}`, {
+      reply_markup: {
+        keyboard: [
+          ["▶️ Start Quiz"],
+          ["🔄 Change Category"],
+          ["📈 My Score"]
+        ],
+        resize_keyboard: true
+      }
+    });
   }
 
+  // =====================
   // USER ACTIONS
+  // =====================
   if (text === "▶️ Start Quiz") {
     return startQuiz(chatId);
+  }
+
+  if (text === "🔄 Change Category") {
+    return bot.sendMessage(chatId, "Choose a category:", {
+      reply_markup: {
+        keyboard: categories.map(c => [c]),
+        resize_keyboard: true
+      }
+    });
   }
 
   if (text === "📈 My Score") {
@@ -310,8 +294,60 @@ bot.on('message', async (msg) => {
     );
   }
 
+  if (text === "🔙 Cancel") {
+    delete adminState[chatId];
+    delete editState[chatId];
+
+    return bot.sendMessage(chatId, "↩️ Cancelled.");
+  }
+
   // =====================
-  // ADMIN
+  // ADMIN BUTTON HANDLERS (BASIC STUBS)
+  // =====================
+  if (userId === ADMIN_ID) {
+
+    if (text === "✏️ Edit Question") {
+      return bot.sendMessage(chatId, "Edit feature coming soon.");
+    }
+
+    if (text === "🗑 Delete Question") {
+      return bot.sendMessage(chatId, "Delete feature coming soon.");
+    }
+
+    if (text === "📋 List Questions") {
+      const list = questionsCache.map((q, i) =>
+        `${i + 1}. [${q.category}] ${q.question}`
+      ).join("\n");
+
+      return bot.sendMessage(chatId, list || "No questions found.");
+    }
+
+    if (text === "📢 Broadcast") {
+      return bot.sendMessage(chatId, "Broadcast feature coming soon.");
+    }
+
+    if (text === "👥 Users") {
+      const snapshot = await db.collection('users').get();
+      return bot.sendMessage(chatId, `Total users: ${snapshot.size}`);
+    }
+
+    if (text === "📊 Leaderboard") {
+      const snapshot = await db.collection('users')
+        .orderBy("bestScore", "desc")
+        .limit(5)
+        .get();
+
+      const board = snapshot.docs.map((doc, i) => {
+        const d = doc.data();
+        return `${i + 1}. ${d.username || d.firstName} - ${d.bestScore}`;
+      }).join("\n");
+
+      return bot.sendMessage(chatId, board || "No data");
+    }
+  }
+
+  // =====================
+  // ADMIN ADD QUESTION (UNCHANGED)
   // =====================
   if (userId === ADMIN_ID) {
 
