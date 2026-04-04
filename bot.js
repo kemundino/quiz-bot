@@ -38,6 +38,7 @@ console.log("🔥 Bot + Firestore running...");
 // =====================
 let adminState = {};
 let editState = {};
+let broadcastState = {};
 let blockedUsers = new Set();
 let userTimers = {};
 let processedPollAnswers = new Set();
@@ -297,52 +298,407 @@ bot.on('message', async (msg) => {
   if (text === "🔙 Cancel") {
     delete adminState[chatId];
     delete editState[chatId];
+    delete broadcastState[chatId];
 
-    return bot.sendMessage(chatId, "↩️ Cancelled.");
+    return bot.sendMessage(chatId, "↩️ Cancelled.", {
+      reply_markup: {
+        keyboard: [
+          ["➕ Add Question", "✏️ Edit Question"],
+          ["🗑 Delete Question"],
+          ["📋 List Questions"],
+          ["📢 Broadcast"],
+          ["👥 Users", "📊 Leaderboard"],
+          ["🔙 Cancel"]
+        ],
+        resize_keyboard: true
+      }
+    });
   }
 
   // =====================
-  // ADMIN BUTTON HANDLERS (BASIC STUBS)
+  // ADMIN BUTTON HANDLERS
   // =====================
   if (userId === ADMIN_ID) {
 
+    // =====================
+    // EDIT QUESTION HANDLER
+    // =====================
     if (text === "✏️ Edit Question") {
-      return bot.sendMessage(chatId, "Edit feature coming soon.");
+      if (questionsCache.length === 0) {
+        return bot.sendMessage(chatId, "❌ No questions available to edit.");
+      }
+
+      const questionList = questionsCache.map((q, idx) => 
+        `${idx + 1}. [${q.category}] ${q.question.substring(0, 50)}...`
+      ).join('\n');
+
+      await bot.sendMessage(chatId, `📝 Select question to edit by sending its number:\n\n${questionList}`);
+      editState[chatId] = { step: 'select' };
+      return;
+    }
+
+    // Handle edit question flow
+    if (editState[chatId]) {
+      const state = editState[chatId];
+
+      if (state.step === 'select') {
+        const questionNumber = parseInt(text);
+        if (isNaN(questionNumber) || questionNumber < 1 || questionNumber > questionsCache.length) {
+          return bot.sendMessage(chatId, "❌ Invalid number. Send a valid question number.");
+        }
+
+        state.questionIndex = questionNumber - 1;
+        state.questionData = questionsCache[state.questionIndex];
+        state.step = 'choose_field';
+
+        return bot.sendMessage(chatId, 
+          `✏️ Editing: ${state.questionData.question}\n\nWhat do you want to edit?\n\n` +
+          `1️⃣ Category (current: ${state.questionData.category})\n` +
+          `2️⃣ Question text\n` +
+          `3️⃣ Options (current: ${state.questionData.options.join(', ')})\n` +
+          `4️⃣ Correct answer (current: ${state.questionData.correct + 1})\n\n` +
+          `Send the number (1-4) or "cancel" to abort.`
+        );
+      }
+
+      if (state.step === 'choose_field') {
+        const choice = parseInt(text);
+        if (isNaN(choice) || choice < 1 || choice > 4) {
+          return bot.sendMessage(chatId, "❌ Send a number between 1 and 4.");
+        }
+
+        state.editField = choice;
+        
+        if (choice === 1) {
+          state.step = 'edit_category';
+          return bot.sendMessage(chatId, "📝 Send the new category name:");
+        } else if (choice === 2) {
+          state.step = 'edit_question';
+          return bot.sendMessage(chatId, "📝 Send the new question text:");
+        } else if (choice === 3) {
+          state.step = 'edit_options';
+          return bot.sendMessage(chatId, "📝 Send the new options (comma separated):\nExample: Option 1, Option 2, Option 3, Option 4");
+        } else if (choice === 4) {
+          state.step = 'edit_correct';
+          return bot.sendMessage(chatId, `📝 Send the correct option number (1-${state.questionData.options.length}):`);
+        }
+      }
+
+      if (state.step === 'edit_category') {
+        state.questionData.category = text;
+        await db.collection('questions').doc(state.questionData.id).update({
+          category: text
+        });
+        await loadQuestions();
+        delete editState[chatId];
+        return bot.sendMessage(chatId, "✅ Category updated successfully!", {
+          reply_markup: {
+            keyboard: [
+              ["➕ Add Question", "✏️ Edit Question"],
+              ["🗑 Delete Question"],
+              ["📋 List Questions"],
+              ["📢 Broadcast"],
+              ["👥 Users", "📊 Leaderboard"],
+              ["🔙 Cancel"]
+            ],
+            resize_keyboard: true
+          }
+        });
+      }
+
+      if (state.step === 'edit_question') {
+        state.questionData.question = text;
+        await db.collection('questions').doc(state.questionData.id).update({
+          question: text
+        });
+        await loadQuestions();
+        delete editState[chatId];
+        return bot.sendMessage(chatId, "✅ Question text updated successfully!", {
+          reply_markup: {
+            keyboard: [
+              ["➕ Add Question", "✏️ Edit Question"],
+              ["🗑 Delete Question"],
+              ["📋 List Questions"],
+              ["📢 Broadcast"],
+              ["👥 Users", "📊 Leaderboard"],
+              ["🔙 Cancel"]
+            ],
+            resize_keyboard: true
+          }
+        });
+      }
+
+      if (state.step === 'edit_options') {
+        const options = text.split(",").map(o => o.trim());
+        if (options.length < 2) {
+          return bot.sendMessage(chatId, "❌ Please provide at least 2 options separated by commas.");
+        }
+        state.questionData.options = options;
+        await db.collection('questions').doc(state.questionData.id).update({
+          options: options
+        });
+        await loadQuestions();
+        delete editState[chatId];
+        return bot.sendMessage(chatId, "✅ Options updated successfully!", {
+          reply_markup: {
+            keyboard: [
+              ["➕ Add Question", "✏️ Edit Question"],
+              ["🗑 Delete Question"],
+              ["📋 List Questions"],
+              ["📢 Broadcast"],
+              ["👥 Users", "📊 Leaderboard"],
+              ["🔙 Cancel"]
+            ],
+            resize_keyboard: true
+          }
+        });
+      }
+
+      if (state.step === 'edit_correct') {
+        const correctIndex = parseInt(text) - 1;
+        if (isNaN(correctIndex) || correctIndex < 0 || correctIndex >= state.questionData.options.length) {
+          return bot.sendMessage(chatId, `❌ Invalid. Send a number between 1 and ${state.questionData.options.length}`);
+        }
+        state.questionData.correct = correctIndex;
+        await db.collection('questions').doc(state.questionData.id).update({
+          correct: correctIndex
+        });
+        await loadQuestions();
+        delete editState[chatId];
+        return bot.sendMessage(chatId, "✅ Correct answer updated successfully!", {
+          reply_markup: {
+            keyboard: [
+              ["➕ Add Question", "✏️ Edit Question"],
+              ["🗑 Delete Question"],
+              ["📋 List Questions"],
+              ["📢 Broadcast"],
+              ["👥 Users", "📊 Leaderboard"],
+              ["🔙 Cancel"]
+            ],
+            resize_keyboard: true
+          }
+        });
+      }
+    }
+
+    // =====================
+    // BROADCAST HANDLER
+    // =====================
+    if (text === "📢 Broadcast") {
+      broadcastState[chatId] = { step: 'message' };
+      return bot.sendMessage(chatId, 
+        "📢 *Broadcast Mode*\n\nSend the message you want to broadcast to all users.\n\n" +
+        "You can send text, photo, video, or document.\n\nType /cancel to abort.",
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    // Handle broadcast flow
+    if (broadcastState[chatId]) {
+      if (text === '/cancel') {
+        delete broadcastState[chatId];
+        return bot.sendMessage(chatId, "❌ Broadcast cancelled.", {
+          reply_markup: {
+            keyboard: [
+              ["➕ Add Question", "✏️ Edit Question"],
+              ["🗑 Delete Question"],
+              ["📋 List Questions"],
+              ["📢 Broadcast"],
+              ["👥 Users", "📊 Leaderboard"],
+              ["🔙 Cancel"]
+            ],
+            resize_keyboard: true
+          }
+        });
+      }
+
+      // Get all users
+      const usersSnapshot = await db.collection('users').get();
+      const totalUsers = usersSnapshot.size;
+      
+      if (totalUsers === 0) {
+        delete broadcastState[chatId];
+        return bot.sendMessage(chatId, "❌ No users found to broadcast to.");
+      }
+
+      await bot.sendMessage(chatId, `📢 Broadcasting to ${totalUsers} users... This may take a while.`);
+      
+      let successCount = 0;
+      let failCount = 0;
+      
+      // Send to each user
+      for (const userDoc of usersSnapshot.docs) {
+        const userData = userDoc.data();
+        const userChatId = userData.chatId;
+        
+        try {
+          // Check if message has photo, video, or document
+          if (msg.photo) {
+            const photo = msg.photo[msg.photo.length - 1].file_id;
+            await bot.sendPhoto(userChatId, photo, { caption: msg.caption || "" });
+          } else if (msg.video) {
+            await bot.sendVideo(userChatId, msg.video.file_id, { caption: msg.caption || "" });
+          } else if (msg.document) {
+            await bot.sendDocument(userChatId, msg.document.file_id, { caption: msg.caption || "" });
+          } else if (text) {
+            await bot.sendMessage(userChatId, text);
+          }
+          successCount++;
+        } catch (err) {
+          console.error(`Failed to send to ${userChatId}:`, err.message);
+          failCount++;
+        }
+        
+        // Add small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      
+      delete broadcastState[chatId];
+      
+      return bot.sendMessage(chatId, 
+        `✅ *Broadcast Complete!*\n\n` +
+        `📨 Sent: ${successCount}\n` +
+        `❌ Failed: ${failCount}\n` +
+        `👥 Total: ${totalUsers}`,
+        { parse_mode: 'Markdown' }
+      );
     }
 
     if (text === "🗑 Delete Question") {
-      return bot.sendMessage(chatId, "Delete feature coming soon.");
+      if (questionsCache.length === 0) {
+        return bot.sendMessage(chatId, "❌ No questions available to delete.");
+      }
+
+      const questionList = questionsCache.map((q, idx) => 
+        `${idx + 1}. [${q.category}] ${q.question.substring(0, 50)}...`
+      ).join('\n');
+
+      await bot.sendMessage(chatId, `🗑 Select question to delete by sending its number:\n\n${questionList}\n\nSend 0 to cancel.`);
+      adminState[chatId] = { step: 'delete_question' };
+      return;
+    }
+
+    // Handle delete question
+    if (adminState[chatId] && adminState[chatId].step === 'delete_question') {
+      const questionNumber = parseInt(text);
+      
+      if (questionNumber === 0) {
+        delete adminState[chatId];
+        return bot.sendMessage(chatId, "❌ Deletion cancelled.");
+      }
+      
+      if (isNaN(questionNumber) || questionNumber < 1 || questionNumber > questionsCache.length) {
+        return bot.sendMessage(chatId, "❌ Invalid number. Send a valid question number or 0 to cancel.");
+      }
+      
+      const questionToDelete = questionsCache[questionNumber - 1];
+      
+      await bot.sendMessage(chatId, 
+        `⚠️ Are you sure you want to delete this question?\n\n` +
+        `Category: ${questionToDelete.category}\n` +
+        `Question: ${questionToDelete.question}\n\n` +
+        `Send "CONFIRM" to delete, or anything else to cancel.`
+      );
+      
+      adminState[chatId] = { step: 'confirm_delete', questionId: questionToDelete.id, questionNumber: questionNumber };
+      return;
+    }
+    
+    if (adminState[chatId] && adminState[chatId].step === 'confirm_delete') {
+      if (text === "CONFIRM") {
+        await db.collection('questions').doc(adminState[chatId].questionId).delete();
+        await loadQuestions();
+        delete adminState[chatId];
+        return bot.sendMessage(chatId, "✅ Question deleted successfully!", {
+          reply_markup: {
+            keyboard: [
+              ["➕ Add Question", "✏️ Edit Question"],
+              ["🗑 Delete Question"],
+              ["📋 List Questions"],
+              ["📢 Broadcast"],
+              ["👥 Users", "📊 Leaderboard"],
+              ["🔙 Cancel"]
+            ],
+            resize_keyboard: true
+          }
+        });
+      } else {
+        delete adminState[chatId];
+        return bot.sendMessage(chatId, "❌ Deletion cancelled.");
+      }
     }
 
     if (text === "📋 List Questions") {
-      const list = questionsCache.map((q, i) =>
-        `${i + 1}. [${q.category}] ${q.question}`
-      ).join("\n");
-
-      return bot.sendMessage(chatId, list || "No questions found.");
-    }
-
-    if (text === "📢 Broadcast") {
-      return bot.sendMessage(chatId, "Broadcast feature coming soon.");
+      if (questionsCache.length === 0) {
+        return bot.sendMessage(chatId, "📋 No questions found.");
+      }
+      
+      // Send in chunks to avoid message length limits
+      let message = "📋 *Question List*\n\n";
+      let count = 0;
+      
+      for (let i = 0; i < questionsCache.length; i++) {
+        const q = questionsCache[i];
+        const newEntry = `${i + 1}. *[${q.category}]* ${q.question.substring(0, 40)}...\n`;
+        
+        if ((message + newEntry).length > 4000) {
+          await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+          message = newEntry;
+        } else {
+          message += newEntry;
+        }
+        count++;
+      }
+      
+      if (message !== "📋 *Question List*\n\n") {
+        await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+      }
+      
+      await bot.sendMessage(chatId, `📊 Total questions: ${count}`);
+      return;
     }
 
     if (text === "👥 Users") {
       const snapshot = await db.collection('users').get();
-      return bot.sendMessage(chatId, `Total users: ${snapshot.size}`);
+      const users = snapshot.docs.map(doc => doc.data());
+      
+      let message = "👥 *User List*\n\n";
+      users.forEach((user, idx) => {
+        message += `${idx + 1}. ${user.firstName || user.username || 'Unknown'} - Score: ${user.bestScore || 0}\n`;
+      });
+      
+      if (message.length > 4000) {
+        await bot.sendMessage(chatId, `👥 Total users: ${users.length}`);
+        // Send first 50 users
+        const limitedUsers = users.slice(0, 50);
+        let limitedMessage = "👥 *Recent Users*\n\n";
+        limitedUsers.forEach((user, idx) => {
+          limitedMessage += `${idx + 1}. ${user.firstName || user.username || 'Unknown'} - Score: ${user.bestScore || 0}\n`;
+        });
+        await bot.sendMessage(chatId, limitedMessage, { parse_mode: 'Markdown' });
+      } else {
+        await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+      }
+      return;
     }
 
     if (text === "📊 Leaderboard") {
       const snapshot = await db.collection('users')
         .orderBy("bestScore", "desc")
-        .limit(5)
+        .limit(10)
         .get();
 
-      const board = snapshot.docs.map((doc, i) => {
-        const d = doc.data();
-        return `${i + 1}. ${d.username || d.firstName} - ${d.bestScore}`;
-      }).join("\n");
+      if (snapshot.empty) {
+        return bot.sendMessage(chatId, "📊 No scores yet.");
+      }
 
-      return bot.sendMessage(chatId, board || "No data");
+      let board = "🏆 *Leaderboard Top 10*\n\n";
+      snapshot.docs.forEach((doc, i) => {
+        const d = doc.data();
+        board += `${i + 1}. ${d.firstName || d.username || 'Anonymous'} - ${d.bestScore || 0} points\n`;
+      });
+
+      return bot.sendMessage(chatId, board, { parse_mode: 'Markdown' });
     }
   }
 
@@ -357,7 +713,7 @@ bot.on('message', async (msg) => {
     }
 
     const state = adminState[chatId];
-    if (state) {
+    if (state && state.step !== 'delete_question' && state.step !== 'confirm_delete') {
 
       if (state.step === 0) {
         state.category = text;
@@ -368,28 +724,49 @@ bot.on('message', async (msg) => {
       if (state.step === 1) {
         state.question = text;
         state.step = 2;
-        return bot.sendMessage(chatId, "Send options (comma separated):");
+        return bot.sendMessage(chatId, "Send options (comma separated):\nExample: Option 1, Option 2, Option 3, Option 4");
       }
 
       if (state.step === 2) {
         const options = text.split(",").map(o => o.trim());
+        if (options.length < 2) {
+          return bot.sendMessage(chatId, "❌ Please provide at least 2 options separated by commas.");
+        }
         state.options = options;
         state.step = 3;
-        return bot.sendMessage(chatId, "Send correct option index:");
+        return bot.sendMessage(chatId, `Send correct option number (1-${options.length}):`);
       }
 
       if (state.step === 3) {
+        const correctIndex = parseInt(text) - 1;
+        if (isNaN(correctIndex) || correctIndex < 0 || correctIndex >= state.options.length) {
+          return bot.sendMessage(chatId, `❌ Invalid. Send a number between 1 and ${state.options.length}`);
+        }
+        
         await db.collection('questions').add({
           category: state.category,
           question: state.question,
           options: state.options,
-          correct: parseInt(text)
+          correct: correctIndex,
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
         });
 
         delete adminState[chatId];
-        loadQuestions();
+        await loadQuestions();
 
-        return bot.sendMessage(chatId, "✅ Question added!");
+        return bot.sendMessage(chatId, "✅ Question added successfully!", {
+          reply_markup: {
+            keyboard: [
+              ["➕ Add Question", "✏️ Edit Question"],
+              ["🗑 Delete Question"],
+              ["📋 List Questions"],
+              ["📢 Broadcast"],
+              ["👥 Users", "📊 Leaderboard"],
+              ["🔙 Cancel"]
+            ],
+            resize_keyboard: true
+          }
+        });
       }
     }
   }
