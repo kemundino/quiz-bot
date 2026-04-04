@@ -973,4 +973,325 @@ bot.on('message', async (msg) => {
         const newEntry = `${i + 1}. *[${q.category}]* ${q.question.substring(0, 40)}...\n`;
         
         if ((message + newEntry).length > 4000) {
-          await bot.sendMessage(chatId, message, { parse
+          await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+          message = newEntry;
+        } else {
+          message += newEntry;
+        }
+        count++;
+      }
+      
+      if (message !== "📋 *Question List*\n\n") {
+        await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+      }
+      
+      await bot.sendMessage(chatId, `📊 Total questions: ${count}`, getAdminKeyboard());
+      return;
+    }
+
+    // Handle users list
+    if (text === "👥 Users") {
+      await showAllUsers(chatId);
+      return;
+    }
+
+    // Handle block user
+    if (text === "🚫 Block User") {
+      blockState[chatId] = { step: 'block' };
+      return bot.sendMessage(chatId, 
+        "🚫 **Block User**\n\n" +
+        "Send the User ID of the person you want to block.\n\n" +
+        "You can find User IDs in the Users list.\n\n" +
+        "Format: Send just the number (e.g., 123456789)\n\n" +
+        "Send /cancel to abort.",
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    // Handle unblock user
+    if (text === "✅ Unblock User") {
+      blockState[chatId] = { step: 'unblock' };
+      return bot.sendMessage(chatId, 
+        "✅ **Unblock User**\n\n" +
+        "Send the User ID of the person you want to unblock.\n\n" +
+        "Format: Send just the number (e.g., 123456789)\n\n" +
+        "Send /cancel to abort.",
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    // Handle block/unblock input
+    if (blockState[chatId]) {
+      if (text === '/cancel') {
+        delete blockState[chatId];
+        return bot.sendMessage(chatId, "Operation cancelled.", getAdminKeyboard());
+      }
+      
+      const userIdToManage = text.trim();
+      
+      if (blockState[chatId].step === 'block') {
+        await blockUser(chatId, userIdToManage);
+        delete blockState[chatId];
+      } else if (blockState[chatId].step === 'unblock') {
+        await unblockUser(chatId, userIdToManage);
+        delete blockState[chatId];
+      }
+      return;
+    }
+
+    // Handle leaderboard for admin
+    if (text === "📊 Leaderboard") {
+      await showLeaderboard(chatId, true);
+      return;
+    }
+
+    // Handle stats
+    if (text === "📈 Stats") {
+      const snapshot = await db.collection('users').get();
+      const totalUsers = snapshot.size;
+      const totalQuestions = questionsCache.length;
+      const avgScore = snapshot.docs.reduce((acc, doc) => acc + (doc.data().bestScore || 0), 0) / totalUsers || 0;
+      
+      const statsMessage = `📊 *Bot Statistics*\n\n` +
+        `👥 Total Users: ${totalUsers}\n` +
+        `🚫 Blocked Users: ${blockedUsers.size}\n` +
+        `📚 Total Questions: ${totalQuestions}\n` +
+        `📈 Average Score: ${avgScore.toFixed(1)}\n` +
+        `🏆 Categories: ${getUniqueCategories().length}\n\n` +
+        `🟢 Status: Active ✅`;
+      
+      await bot.sendMessage(chatId, statsMessage, { parse_mode: 'Markdown', ...getAdminKeyboard() });
+      return;
+    }
+
+    // Handle add question
+    if (text === "➕ Add Question") {
+      adminState[chatId] = { step: 0 };
+      return bot.sendMessage(chatId, "Send category:");
+    }
+
+    const state = adminState[chatId];
+    if (state && state.step !== 'delete_question' && state.step !== 'confirm_delete') {
+      if (state.step === 0) {
+        state.category = text;
+        state.step = 1;
+        return bot.sendMessage(chatId, "Send question:");
+      }
+
+      if (state.step === 1) {
+        state.question = text;
+        state.step = 2;
+        return bot.sendMessage(chatId, "Send options (comma separated):\nExample: Option 1, Option 2, Option 3, Option 4");
+      }
+
+      if (state.step === 2) {
+        const options = text.split(",").map(o => o.trim());
+        if (options.length < 2) {
+          return bot.sendMessage(chatId, "❌ Please provide at least 2 options separated by commas.");
+        }
+        state.options = options;
+        state.step = 3;
+        return bot.sendMessage(chatId, `Send correct option number (1-${options.length}):`);
+      }
+
+      if (state.step === 3) {
+        const correctIndex = parseInt(text) - 1;
+        if (isNaN(correctIndex) || correctIndex < 0 || correctIndex >= state.options.length) {
+          return bot.sendMessage(chatId, `❌ Invalid. Send a number between 1 and ${state.options.length}`);
+        }
+        
+        await db.collection('questions').add({
+          category: state.category,
+          question: state.question,
+          options: state.options,
+          correct: correctIndex,
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        delete adminState[chatId];
+        await loadQuestions();
+
+        return bot.sendMessage(chatId, "✅ Question added successfully!", getAdminKeyboard());
+      }
+    }
+
+    return;
+  }
+
+  // =====================
+  // PROFESSIONAL USER HANDLERS
+  // =====================
+  
+  const categories = getUniqueCategories();
+  const cleanCategory = text.replace(/^📚 /, '');
+  
+  // Handle category selection with question count display
+  if (categories.includes(cleanCategory)) {
+    await db.collection('users').doc(chatId).update({
+      category: cleanCategory
+    });
+    
+    const questions = getQuestionsByCategory(cleanCategory);
+    const sampleQuestions = questions.slice(0, 3).map(q => `• ${q.question.substring(0, 50)}...`).join('\n');
+    
+    const categoryMessage = `✅ **Category Selected:** ${cleanCategory}\n\n` +
+      `📚 **Questions available:** ${questions.length}\n` +
+      `📝 **Sample questions:**\n${sampleQuestions}\n\n` +
+      `🎯 **Ready to test your knowledge?**\n\n` +
+      `Tap "Start Quiz" to begin! 🚀`;
+    
+    return bot.sendMessage(chatId, categoryMessage, {
+      parse_mode: 'Markdown',
+      ...getMainKeyboard()
+    });
+  }
+  
+  // Handle change category - show categories with question counts
+  if (text === "🔄 Change Category") {
+    if (userSessions[chatId]) {
+      await bot.sendMessage(chatId, "⚠️ Please end your current quiz before changing category.\nTap 'End Quiz' to stop.",
+        getQuizKeyboard());
+    } else {
+      await showCategoriesWithCount(chatId);
+    }
+    return;
+  }
+  
+  // Handle main menu actions
+  switch(text) {
+    case "🎯 Start Quiz":
+      const userDoc = await db.collection('users').doc(chatId).get();
+      const user = userDoc.data();
+      
+      if (!user || !user.category) {
+        return bot.sendMessage(chatId, "⚠️ Please select a category first!", 
+          getCategoryKeyboard(categories));
+      }
+      
+      if (user.quizActive) {
+        return bot.sendMessage(chatId, "⚠️ You already have an active quiz! Complete or end it first.",
+          getQuizKeyboard());
+      }
+      
+      await startQuiz(chatId);
+      break;
+      
+    case "📊 My Stats":
+      await showUserStats(chatId);
+      break;
+      
+    case "🏆 Leaderboard":
+      await showLeaderboard(chatId, false);
+      break;
+      
+    case "ℹ️ About":
+      await showAbout(chatId);
+      break;
+      
+    case "❌ End Quiz":
+      if (userTimers[chatId]) {
+        clearTimeout(userTimers[chatId]);
+        delete userTimers[chatId];
+      }
+      await endQuiz(chatId, "❌ Quiz ended. Ready for another challenge?");
+      break;
+      
+    case "📊 Progress":
+      const userData = await db.collection('users').doc(chatId).get();
+      if (userData.exists && userData.data().quizActive) {
+        const user = userData.data();
+        const questions = getQuestionsByCategory(user.category);
+        const percentage = Math.round((user.score / questions.length) * 100);
+        await bot.sendMessage(chatId, 
+          `📊 **Current Progress**\n\n` +
+          `✅ Completed: ${user.current}/${questions.length}\n` +
+          `🎯 Score: ${user.score}/${questions.length}\n` +
+          `📈 Percentage: ${percentage}%\n\n` +
+          `Keep going! 🚀`, 
+          { parse_mode: 'Markdown' }
+        );
+      } else {
+        await bot.sendMessage(chatId, "⚠️ No active quiz. Start a new quiz to see progress!",
+          getMainKeyboard());
+      }
+      break;
+      
+    default:
+      const currentUser = await db.collection('users').doc(chatId).get();
+      if (currentUser.exists && currentUser.data().quizActive) {
+        return;
+      }
+      
+      await bot.sendMessage(chatId, "❓ **Unknown Command**\n\nUse the buttons below to navigate:", 
+        getMainKeyboard());
+      break;
+  }
+});
+
+// =====================
+// POLL ANSWERS
+// =====================
+bot.on('poll_answer', async (answer) => {
+  try {
+    const key = `${answer.user.id}_${answer.poll_id}`;
+    if (processedPollAnswers.has(key)) return;
+    processedPollAnswers.add(key);
+
+    const userId = answer.user.id.toString();
+    const selected = answer.option_ids[0];
+
+    if (userTimers[userId]) {
+      clearTimeout(userTimers[userId]);
+      delete userTimers[userId];
+    }
+
+    const userRef = db.collection('users').doc(userId);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists || !userDoc.data().quizActive) return;
+
+    const user = userDoc.data();
+    const questions = getQuestionsByCategory(user.category);
+    const q = questions[user.current];
+
+    if (!q) return;
+
+    const isCorrect = (selected === q.correct);
+    
+    if (isCorrect) {
+      user.score++;
+      await bot.sendMessage(userId, "✅ **Correct!** +1 point", {
+        parse_mode: 'Markdown'
+      });
+    } else {
+      const correctAnswer = q.options[q.correct];
+      await bot.sendMessage(userId, `❌ **Wrong!**\n\nThe correct answer was: *${correctAnswer}*`, {
+        parse_mode: 'Markdown'
+      });
+    }
+
+    user.current++;
+
+    await userRef.update({
+      score: user.score,
+      current: user.current
+    });
+
+    setTimeout(() => sendQuestion(userId), 2000);
+
+  } catch (err) {
+    console.error("❌ poll_answer error:", err);
+  }
+});
+
+// =====================
+// START SERVER
+// =====================
+const PORT = process.env.PORT || 3000;
+
+process.on("uncaughtException", err => console.error(err));
+process.on("unhandledRejection", err => console.error(err));
+
+app.listen(PORT, () => {
+  console.log(`🌐 Server running on ${PORT}`);
+});
