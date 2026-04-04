@@ -145,7 +145,7 @@ async function sendQuestion(chatId) {
         `✅ Finished!\nScore: ${user.score}/${questions.length}`,
         {
           reply_markup: {
-            keyboard: [["▶️ Start Quiz"]],
+            keyboard: [["▶️ Start Quiz"], ["📈 My Score"], ["🔙 Back"]],
             resize_keyboard: true
           }
         }
@@ -198,12 +198,15 @@ bot.onText(/\/start/, async (msg) => {
 
   if (msg.from.id !== ADMIN_ID) {
 
-    // ✅ CATEGORY SELECTION WILL HAPPEN HERE
     const categories = [...new Set(questionsCache.map(q => q.category).filter(Boolean))];
 
     return bot.sendMessage(chatId, "Choose a category:", {
       reply_markup: {
-        keyboard: categories.map(c => [c]).concat([["▶️ Start Quiz"], ["📈 My Score"]]),
+        keyboard: categories.map(c => [c]).concat([
+          ["▶️ Start Quiz"],
+          ["📈 My Score"],
+          ["🔙 Back"]
+        ]),
         resize_keyboard: true
       }
     });
@@ -217,7 +220,7 @@ bot.onText(/\/start/, async (msg) => {
           ["📋 List Questions"],
           ["📢 Broadcast"],
           ["👥 Users", "📊 Leaderboard"],
-          ["🔙 Cancel"]
+          ["🔙 Back"]
         ],
         resize_keyboard: true
       }
@@ -239,11 +242,46 @@ bot.on('message', async (msg) => {
     return bot.sendMessage(chatId, "🚫 You are blocked.");
   }
 
-  // Save user data
   await db.collection('users').doc(chatId).set({
     username: msg.from.username || "",
     firstName: msg.from.first_name || ""
   }, { merge: true });
+
+  // =====================
+  // GLOBAL BACK HANDLER (NEW)
+  // =====================
+  if (text === "🔙 Back" || text === "/back") {
+
+    delete adminState[chatId];
+    delete editState[chatId];
+
+    if (userId === ADMIN_ID) {
+      return bot.sendMessage(chatId, "👑 Admin Panel", {
+        reply_markup: {
+          keyboard: [
+            ["➕ Add Question", "✏️ Edit Question"],
+            ["🗑 Delete Question"],
+            ["📋 List Questions"],
+            ["📢 Broadcast"],
+            ["👥 Users", "📊 Leaderboard"],
+            ["🔙 Back"]
+          ],
+          resize_keyboard: true
+        }
+      });
+    } else {
+      return bot.sendMessage(chatId, "🏠 Main Menu", {
+        reply_markup: {
+          keyboard: [
+            ["▶️ Start Quiz"],
+            ["📈 My Score"],
+            ["🔙 Back"]
+          ],
+          resize_keyboard: true
+        }
+      });
+    }
+  }
 
   // =====================
   // CATEGORY SELECTION (USER)
@@ -272,13 +310,6 @@ bot.on('message', async (msg) => {
     );
   }
 
-  if (text === "🔙 Cancel") {
-    delete adminState[chatId];
-    delete editState[chatId];
-
-    return bot.sendMessage(chatId, "↩️ Cancelled. Back to admin menu.");
-  }
-
   // =====================
   // ADMIN
   // =====================
@@ -289,7 +320,6 @@ bot.on('message', async (msg) => {
       return bot.sendMessage(chatId, "Send category:");
     }
 
-    // (Add Question Flow updated slightly to include category)
     const state = adminState[chatId];
     if (state) {
 
