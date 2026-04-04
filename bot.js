@@ -40,6 +40,7 @@ let adminState = {};
 let editState = {};
 let broadcastState = {};
 let blockState = {};
+let categoryManageState = {};
 let blockedUsers = new Set();
 let userTimers = {};
 let processedPollAnswers = new Set();
@@ -63,13 +64,15 @@ async function loadBlockedUsers() {
 // =====================
 async function loadQuestions() {
   const snapshot = await db.collection('questions')
-    .orderBy("order")
+    .orderBy("createdAt", "desc")
     .get();
 
   questionsCache = snapshot.docs.map(doc => ({
     id: doc.id,
     ...doc.data()
   }));
+  
+  console.log(`📚 Loaded ${questionsCache.length} questions from ${getUniqueCategories().length} categories`);
 }
 
 // =====================
@@ -113,7 +116,7 @@ app.get('/', (req, res) => {
 });
 
 // =====================
-// ADMIN KEYBOARD
+// ADMIN KEYBOARDS
 // =====================
 const getAdminKeyboard = () => ({
   reply_markup: {
@@ -123,23 +126,21 @@ const getAdminKeyboard = () => ({
       ["📢 Broadcast", "👥 Users"],
       ["🚫 Block User", "✅ Unblock User"],
       ["📊 Leaderboard", "📈 Stats"],
-      ["🔙 Back to Main Menu"]
+      ["🔙 Main Menu"]
     ],
-    resize_keyboard: true
+    resize_keyboard: true,
+    input_field_placeholder: "Choose an option..."
   }
 });
 
-const getAdminMainKeyboard = () => ({
+const getCategoryManagementKeyboard = (categories, action) => ({
   reply_markup: {
     keyboard: [
-      ["➕ Add Question", "✏️ Edit Question"],
-      ["🗑 Delete Question", "📋 List Questions"],
-      ["📢 Broadcast", "👥 Users"],
-      ["🚫 Block User", "✅ Unblock User"],
-      ["📊 Leaderboard", "📈 Stats"],
-      ["🔙 Back to Main Menu"]
+      ...categories.map(cat => [`📚 ${cat}`]),
+      ["🔙 Back to Admin Menu"]
     ],
-    resize_keyboard: true
+    resize_keyboard: true,
+    input_field_placeholder: "Select a category..."
   }
 });
 
@@ -154,23 +155,29 @@ const getMainKeyboard = () => ({
       ["🔄 Change Category"]
     ],
     resize_keyboard: true,
-    persistent: true
+    persistent: true,
+    input_field_placeholder: "Choose an option..."
   }
 });
 
 const getCategoryKeyboard = (categories) => ({
   reply_markup: {
-    keyboard: categories.map(c => [`📚 ${c}`]),
+    keyboard: [
+      ...categories.map(c => [`📚 ${c}`]),
+      ["🔙 Back to Main Menu"]
+    ],
     resize_keyboard: true,
-    persistent: true
+    persistent: true,
+    input_field_placeholder: "Select a category..."
   }
 });
 
 const getQuizKeyboard = () => ({
   reply_markup: {
-    keyboard: [["❌ End Quiz", "📊 Progress"]],
+    keyboard: [["❌ End Quiz", "📊 Progress"], ["🔙 Main Menu"]],
     resize_keyboard: true,
-    persistent: true
+    persistent: true,
+    input_field_placeholder: "Quiz in progress..."
   }
 });
 
@@ -217,7 +224,9 @@ async function startQuiz(chatId) {
 // GET UNIQUE CATEGORIES
 // =====================
 function getUniqueCategories() {
-  return [...new Set(questionsCache.map(q => q.category).filter(Boolean))];
+  const categories = [...new Set(questionsCache.map(q => q.category).filter(Boolean))];
+  console.log("Available categories:", categories);
+  return categories;
 }
 
 // =====================
@@ -490,20 +499,20 @@ async function showAllUsers(chatId) {
   }
   
   let message = "👥 **User List**\n\n";
-  users.forEach((user, idx) => {
+  users.slice(0, 20).forEach((user, idx) => {
     const status = blockedUsers.has(user.id) ? "🚫 BLOCKED" : "✅ ACTIVE";
     message += `${idx + 1}. ${user.firstName || user.username || 'Unknown'}\n`;
     message += `   ID: \`${user.id}\`\n`;
-    message += `   Score: ${user.bestScore || 0} | Status: ${status}\n\n`;
+    message += `   Score: ${user.bestScore || 0} | ${status}\n\n`;
   });
   
-  if (message.length > 4000) {
-    await bot.sendMessage(chatId, `👥 Total users: ${users.length}\n\nBlocked: ${blockedUsers.size}\nActive: ${users.length - blockedUsers.size}`);
-    await bot.sendMessage(chatId, "Use /block <user_id> or /unblock <user_id> to manage users.", { parse_mode: 'Markdown' });
-  } else {
-    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-    await bot.sendMessage(chatId, "To block/unblock a user, send:\n`/block USER_ID`\n`/unblock USER_ID`", { parse_mode: 'Markdown' });
+  if (users.length > 20) {
+    message += `\n📊 Showing 20 of ${users.length} users\n`;
   }
+  
+  await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  await bot.sendMessage(chatId, "To block/unblock a user, use:\n`/block USER_ID`\n`/unblock USER_ID`\n\nOr use the Block/Unblock buttons.", 
+    { parse_mode: 'Markdown', ...getAdminKeyboard() });
 }
 
 // =====================
@@ -511,24 +520,20 @@ async function showAllUsers(chatId) {
 // =====================
 async function blockUser(adminChatId, userIdToBlock) {
   try {
-    // Check if user exists
     const userRef = db.collection('users').doc(userIdToBlock);
     const userDoc = await userRef.get();
     
     if (!userDoc.exists) {
-      return bot.sendMessage(adminChatId, `❌ User ${userIdToBlock} not found.`);
+      return bot.sendMessage(adminChatId, `❌ User ${userIdToBlock} not found.`, getAdminKeyboard());
     }
     
-    // Add to blocked collection
     await db.collection('blocked').doc(userIdToBlock).set({
       blockedAt: admin.firestore.FieldValue.serverTimestamp(),
       blockedBy: adminChatId
     });
     
-    // Update local set
     blockedUsers.add(userIdToBlock);
     
-    // Notify the blocked user
     try {
       await bot.sendMessage(userIdToBlock, "🚫 You have been blocked by the administrator. You can no longer use this bot.");
     } catch (err) {
@@ -546,7 +551,7 @@ async function blockUser(adminChatId, userIdToBlock) {
     
   } catch (err) {
     console.error("Block user error:", err);
-    await bot.sendMessage(adminChatId, "❌ Failed to block user. Please try again.");
+    await bot.sendMessage(adminChatId, "❌ Failed to block user. Please try again.", getAdminKeyboard());
   }
 }
 
@@ -555,21 +560,16 @@ async function blockUser(adminChatId, userIdToBlock) {
 // =====================
 async function unblockUser(adminChatId, userIdToUnblock) {
   try {
-    // Check if user is blocked
     const blockedRef = db.collection('blocked').doc(userIdToUnblock);
     const blockedDoc = await blockedRef.get();
     
     if (!blockedDoc.exists) {
-      return bot.sendMessage(adminChatId, `❌ User ${userIdToUnblock} is not blocked.`);
+      return bot.sendMessage(adminChatId, `❌ User ${userIdToUnblock} is not blocked.`, getAdminKeyboard());
     }
     
-    // Remove from blocked collection
     await blockedRef.delete();
-    
-    // Update local set
     blockedUsers.delete(userIdToUnblock);
     
-    // Notify the unblocked user
     try {
       await bot.sendMessage(userIdToUnblock, "✅ You have been unblocked! You can now use the bot again. Send /start to continue.");
     } catch (err) {
@@ -589,7 +589,7 @@ async function unblockUser(adminChatId, userIdToUnblock) {
     
   } catch (err) {
     console.error("Unblock user error:", err);
-    await bot.sendMessage(adminChatId, "❌ Failed to unblock user. Please try again.");
+    await bot.sendMessage(adminChatId, "❌ Failed to unblock user. Please try again.", getAdminKeyboard());
   }
 }
 
@@ -598,6 +598,11 @@ async function unblockUser(adminChatId, userIdToUnblock) {
 // =====================
 async function showCategoriesWithCount(chatId) {
   const categories = getUniqueCategories();
+  
+  if (categories.length === 0) {
+    return bot.sendMessage(chatId, "❌ No categories available.", getMainKeyboard());
+  }
+  
   let message = "📚 **Available Categories**\n\n";
   
   for (const category of categories) {
@@ -605,12 +610,47 @@ async function showCategoriesWithCount(chatId) {
     message += `📌 **${category}** - ${questions.length} questions\n`;
   }
   
-  message += `\nSelect a category by tapping the button below.`;
+  message += `\n📝 Select a category by tapping the button below.\n`;
+  message += `🔙 Use "Back to Main Menu" to return.`;
   
   await bot.sendMessage(chatId, message, {
     parse_mode: 'Markdown',
     ...getCategoryKeyboard(categories)
   });
+}
+
+// =====================
+// ADMIN CATEGORY MANAGEMENT
+// =====================
+async function showAdminCategoryList(chatId, action) {
+  const categories = getUniqueCategories();
+  
+  if (categories.length === 0) {
+    return bot.sendMessage(chatId, "❌ No categories found. Please add questions first.", getAdminKeyboard());
+  }
+  
+  categoryManageState[chatId] = { action: action };
+  
+  let actionText = "";
+  switch(action) {
+    case "edit":
+      actionText = "Select a category to edit questions from:";
+      break;
+    case "delete":
+      actionText = "Select a category to delete questions from:";
+      break;
+    case "list":
+      actionText = "Select a category to view questions:";
+      break;
+    default:
+      actionText = "Select a category:";
+  }
+  
+  await bot.sendMessage(chatId, 
+    `📂 **${action.toUpperCase()} Questions by Category**\n\n${actionText}\n\n` +
+    `Total Categories: ${categories.length}`,
+    { parse_mode: 'Markdown', ...getCategoryManagementKeyboard(categories, action) }
+  );
 }
 
 // =====================
@@ -620,8 +660,7 @@ bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id.toString();
   const userId = msg.from.id;
 
-  // Check if user is blocked
-  if (blockedUsers.has(chatId)) {
+  if (blockedUsers.has(chatId) && userId !== ADMIN_ID) {
     return bot.sendMessage(chatId, "🚫 You are blocked from using this bot. Contact administrator for assistance.");
   }
 
@@ -658,8 +697,7 @@ bot.onText(/\/start/, async (msg) => {
       ...getCategoryKeyboard(categories)
     });
   } else {
-    // Admin welcome
-    await bot.sendMessage(chatId, "👑 **Admin Panel**", {
+    await bot.sendMessage(chatId, "👑 **Admin Panel**\n\nSelect an option to manage the bot:", {
       parse_mode: 'Markdown',
       ...getAdminKeyboard()
     });
@@ -689,6 +727,13 @@ bot.onText(/\/unblock (.+)/, async (msg, match) => {
   await unblockUser(chatId, userIdToUnblock);
 });
 
+bot.onText(/\/categories/, async (msg) => {
+  const chatId = msg.chat.id.toString();
+  const categories = getUniqueCategories();
+  const message = `📚 **Available Categories:**\n\n${categories.map((c, i) => `${i+1}. ${c}`).join('\n')}\n\nTotal: ${categories.length}`;
+  await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+});
+
 // =====================
 // MESSAGE HANDLER
 // =====================
@@ -699,12 +744,10 @@ bot.on('message', async (msg) => {
 
   if (!text) return;
 
-  // Check if user is blocked
   if (blockedUsers.has(chatId) && userId !== ADMIN_ID) {
     return bot.sendMessage(chatId, "🚫 You are blocked from using this bot.");
   }
 
-  // Ensure user exists
   await db.collection('users').doc(chatId).set({
     username: msg.from.username || "",
     firstName: msg.from.first_name || "",
@@ -716,129 +759,236 @@ bot.on('message', async (msg) => {
   // =====================
   if (userId === ADMIN_ID) {
     
-    // Handle back to main menu
-    if (text === "🔙 Back to Main Menu") {
+    if (text === "🔙 Main Menu" || text === "🔙 Back to Admin Menu") {
       delete adminState[chatId];
       delete editState[chatId];
       delete broadcastState[chatId];
       delete blockState[chatId];
-      return bot.sendMessage(chatId, "👑 **Admin Panel**", {
+      delete categoryManageState[chatId];
+      return bot.sendMessage(chatId, "👑 **Admin Panel**\n\nSelect an option to manage the bot:", {
         parse_mode: 'Markdown',
         ...getAdminKeyboard()
       });
     }
     
-    // Handle edit question
-    if (text === "✏️ Edit Question") {
-      if (questionsCache.length === 0) {
-        return bot.sendMessage(chatId, "❌ No questions available to edit.", getAdminKeyboard());
-      }
-
-      const questionList = questionsCache.map((q, idx) => 
-        `${idx + 1}. [${q.category}] ${q.question.substring(0, 50)}...`
-      ).join('\n');
-
-      await bot.sendMessage(chatId, `📝 Select question to edit by sending its number:\n\n${questionList}`);
-      editState[chatId] = { step: 'select' };
+    // Handle category-based question management
+    if (text === "📋 List Questions") {
+      await showAdminCategoryList(chatId, "list");
       return;
     }
-
-    // Handle edit question flow
-    if (editState[chatId]) {
-      const state = editState[chatId];
-
-      if (state.step === 'select') {
-        const questionNumber = parseInt(text);
-        if (isNaN(questionNumber) || questionNumber < 1 || questionNumber > questionsCache.length) {
-          return bot.sendMessage(chatId, "❌ Invalid number. Send a valid question number.");
-        }
-
-        state.questionIndex = questionNumber - 1;
-        state.questionData = questionsCache[state.questionIndex];
-        state.step = 'choose_field';
-
-        return bot.sendMessage(chatId, 
-          `✏️ Editing: ${state.questionData.question}\n\nWhat do you want to edit?\n\n` +
-          `1️⃣ Category (current: ${state.questionData.category})\n` +
-          `2️⃣ Question text\n` +
-          `3️⃣ Options (current: ${state.questionData.options.join(', ')})\n` +
-          `4️⃣ Correct answer (current: ${state.questionData.correct + 1})\n\n` +
-          `Send the number (1-4) or "cancel" to abort.`
-        );
-      }
-
-      if (state.step === 'choose_field') {
-        const choice = parseInt(text);
-        if (isNaN(choice) || choice < 1 || choice > 4) {
-          return bot.sendMessage(chatId, "❌ Send a number between 1 and 4.");
-        }
-
-        state.editField = choice;
+    
+    if (text === "✏️ Edit Question") {
+      await showAdminCategoryList(chatId, "edit");
+      return;
+    }
+    
+    if (text === "🗑 Delete Question") {
+      await showAdminCategoryList(chatId, "delete");
+      return;
+    }
+    
+    // Handle category selection for management
+    if (categoryManageState[chatId]) {
+      const cleanCategory = text.replace(/^📚 /, '');
+      const categories = getUniqueCategories();
+      
+      if (categories.includes(cleanCategory)) {
+        const questions = getQuestionsByCategory(cleanCategory);
         
-        if (choice === 1) {
-          state.step = 'edit_category';
-          return bot.sendMessage(chatId, "📝 Send the new category name:");
-        } else if (choice === 2) {
-          state.step = 'edit_question';
-          return bot.sendMessage(chatId, "📝 Send the new question text:");
-        } else if (choice === 3) {
-          state.step = 'edit_options';
-          return bot.sendMessage(chatId, "📝 Send the new options (comma separated):\nExample: Option 1, Option 2, Option 3, Option 4");
-        } else if (choice === 4) {
-          state.step = 'edit_correct';
-          return bot.sendMessage(chatId, `📝 Send the correct option number (1-${state.questionData.options.length}):`);
+        if (questions.length === 0) {
+          await bot.sendMessage(chatId, `❌ No questions found in category: ${cleanCategory}`);
+          delete categoryManageState[chatId];
+          return bot.sendMessage(chatId, "Admin Panel:", getAdminKeyboard());
+        }
+        
+        if (categoryManageState[chatId].action === "list") {
+          let message = `📋 **Questions in ${cleanCategory}**\n\n`;
+          questions.forEach((q, idx) => {
+            message += `${idx + 1}. ${q.question}\n`;
+            message += `   Options: ${q.options.join(', ')}\n`;
+            message += `   Correct: ${q.options[q.correct]}\n\n`;
+          });
+          
+          if (message.length > 4000) {
+            await bot.sendMessage(chatId, `📋 Questions in ${cleanCategory}: ${questions.length} total`);
+            for (let i = 0; i < questions.length; i += 5) {
+              let chunk = `📋 **${cleanCategory}** (${i+1}-${Math.min(i+5, questions.length)})\n\n`;
+              for (let j = i; j < Math.min(i+5, questions.length); j++) {
+                chunk += `${j+1}. ${questions[j].question}\n`;
+              }
+              await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' });
+            }
+          } else {
+            await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+          }
+          
+          delete categoryManageState[chatId];
+          return bot.sendMessage(chatId, "Admin Panel:", getAdminKeyboard());
+        }
+        
+        if (categoryManageState[chatId].action === "edit") {
+          let message = `✏️ **Edit Question - ${cleanCategory}**\n\n`;
+          questions.forEach((q, idx) => {
+            message += `${idx + 1}. ${q.question.substring(0, 50)}...\n`;
+          });
+          message += `\nSend the question number to edit (1-${questions.length}):`;
+          
+          adminState[chatId] = { 
+            step: 'select_question', 
+            category: cleanCategory,
+            questions: questions 
+          };
+          delete categoryManageState[chatId];
+          await bot.sendMessage(chatId, message);
+          return;
+        }
+        
+        if (categoryManageState[chatId].action === "delete") {
+          let message = `🗑 **Delete Question - ${cleanCategory}**\n\n`;
+          questions.forEach((q, idx) => {
+            message += `${idx + 1}. ${q.question.substring(0, 50)}...\n`;
+          });
+          message += `\nSend the question number to delete (1-${questions.length}):`;
+          
+          adminState[chatId] = { 
+            step: 'select_question_delete', 
+            category: cleanCategory,
+            questions: questions 
+          };
+          delete categoryManageState[chatId];
+          await bot.sendMessage(chatId, message);
+          return;
         }
       }
-
-      if (state.step === 'edit_category') {
-        state.questionData.category = text;
-        await db.collection('questions').doc(state.questionData.id).update({
-          category: text
-        });
-        await loadQuestions();
-        delete editState[chatId];
-        return bot.sendMessage(chatId, "✅ Category updated successfully!", getAdminKeyboard());
-      }
-
-      if (state.step === 'edit_question') {
-        state.questionData.question = text;
-        await db.collection('questions').doc(state.questionData.id).update({
-          question: text
-        });
-        await loadQuestions();
-        delete editState[chatId];
-        return bot.sendMessage(chatId, "✅ Question text updated successfully!", getAdminKeyboard());
-      }
-
-      if (state.step === 'edit_options') {
-        const options = text.split(",").map(o => o.trim());
-        if (options.length < 2) {
-          return bot.sendMessage(chatId, "❌ Please provide at least 2 options separated by commas.");
-        }
-        state.questionData.options = options;
-        await db.collection('questions').doc(state.questionData.id).update({
-          options: options
-        });
-        await loadQuestions();
-        delete editState[chatId];
-        return bot.sendMessage(chatId, "✅ Options updated successfully!", getAdminKeyboard());
-      }
-
-      if (state.step === 'edit_correct') {
-        const correctIndex = parseInt(text) - 1;
-        if (isNaN(correctIndex) || correctIndex < 0 || correctIndex >= state.questionData.options.length) {
-          return bot.sendMessage(chatId, `❌ Invalid. Send a number between 1 and ${state.questionData.options.length}`);
-        }
-        state.questionData.correct = correctIndex;
-        await db.collection('questions').doc(state.questionData.id).update({
-          correct: correctIndex
-        });
-        await loadQuestions();
-        delete editState[chatId];
-        return bot.sendMessage(chatId, "✅ Correct answer updated successfully!", getAdminKeyboard());
+      
+      if (text === "🔙 Back to Admin Menu") {
+        delete categoryManageState[chatId];
+        return bot.sendMessage(chatId, "Admin Panel:", getAdminKeyboard());
       }
     }
-
+    
+    // Handle edit question flow
+    if (adminState[chatId] && adminState[chatId].step === 'select_question') {
+      const questionNumber = parseInt(text);
+      if (isNaN(questionNumber) || questionNumber < 1 || questionNumber > adminState[chatId].questions.length) {
+        return bot.sendMessage(chatId, `❌ Invalid number. Send a number between 1 and ${adminState[chatId].questions.length}`);
+      }
+      
+      const selectedQuestion = adminState[chatId].questions[questionNumber - 1];
+      adminState[chatId].questionData = selectedQuestion;
+      adminState[chatId].step = 'choose_field';
+      
+      return bot.sendMessage(chatId, 
+        `✏️ **Editing Question**\n\n` +
+        `Category: ${selectedQuestion.category}\n` +
+        `Question: ${selectedQuestion.question}\n\n` +
+        `What do you want to edit?\n\n` +
+        `1️⃣ Category\n` +
+        `2️⃣ Question Text\n` +
+        `3️⃣ Options\n` +
+        `4️⃣ Correct Answer\n\n` +
+        `Send the number (1-4):`
+      );
+    }
+    
+    if (adminState[chatId] && adminState[chatId].step === 'choose_field') {
+      const choice = parseInt(text);
+      if (isNaN(choice) || choice < 1 || choice > 4) {
+        return bot.sendMessage(chatId, "❌ Send a number between 1 and 4.");
+      }
+      
+      adminState[chatId].editField = choice;
+      
+      if (choice === 1) {
+        adminState[chatId].step = 'edit_category';
+        return bot.sendMessage(chatId, "📝 Send the new category name:");
+      } else if (choice === 2) {
+        adminState[chatId].step = 'edit_question_text';
+        return bot.sendMessage(chatId, "📝 Send the new question text:");
+      } else if (choice === 3) {
+        adminState[chatId].step = 'edit_options';
+        return bot.sendMessage(chatId, "📝 Send the new options (comma separated):\nExample: Option 1, Option 2, Option 3, Option 4");
+      } else if (choice === 4) {
+        adminState[chatId].step = 'edit_correct';
+        return bot.sendMessage(chatId, `📝 Send the correct option number (1-${adminState[chatId].questionData.options.length}):`);
+      }
+    }
+    
+    if (adminState[chatId] && adminState[chatId].step === 'edit_category') {
+      await db.collection('questions').doc(adminState[chatId].questionData.id).update({
+        category: text
+      });
+      await loadQuestions();
+      delete adminState[chatId];
+      return bot.sendMessage(chatId, "✅ Category updated successfully!", getAdminKeyboard());
+    }
+    
+    if (adminState[chatId] && adminState[chatId].step === 'edit_question_text') {
+      await db.collection('questions').doc(adminState[chatId].questionData.id).update({
+        question: text
+      });
+      await loadQuestions();
+      delete adminState[chatId];
+      return bot.sendMessage(chatId, "✅ Question text updated successfully!", getAdminKeyboard());
+    }
+    
+    if (adminState[chatId] && adminState[chatId].step === 'edit_options') {
+      const options = text.split(",").map(o => o.trim());
+      if (options.length < 2) {
+        return bot.sendMessage(chatId, "❌ Please provide at least 2 options separated by commas.");
+      }
+      await db.collection('questions').doc(adminState[chatId].questionData.id).update({
+        options: options
+      });
+      await loadQuestions();
+      delete adminState[chatId];
+      return bot.sendMessage(chatId, "✅ Options updated successfully!", getAdminKeyboard());
+    }
+    
+    if (adminState[chatId] && adminState[chatId].step === 'edit_correct') {
+      const correctIndex = parseInt(text) - 1;
+      if (isNaN(correctIndex) || correctIndex < 0 || correctIndex >= adminState[chatId].questionData.options.length) {
+        return bot.sendMessage(chatId, `❌ Invalid. Send a number between 1 and ${adminState[chatId].questionData.options.length}`);
+      }
+      await db.collection('questions').doc(adminState[chatId].questionData.id).update({
+        correct: correctIndex
+      });
+      await loadQuestions();
+      delete adminState[chatId];
+      return bot.sendMessage(chatId, "✅ Correct answer updated successfully!", getAdminKeyboard());
+    }
+    
+    // Handle delete question flow
+    if (adminState[chatId] && adminState[chatId].step === 'select_question_delete') {
+      const questionNumber = parseInt(text);
+      if (isNaN(questionNumber) || questionNumber < 1 || questionNumber > adminState[chatId].questions.length) {
+        return bot.sendMessage(chatId, `❌ Invalid number. Send a number between 1 and ${adminState[chatId].questions.length}`);
+      }
+      
+      const questionToDelete = adminState[chatId].questions[questionNumber - 1];
+      adminState[chatId].questionToDelete = questionToDelete;
+      adminState[chatId].step = 'confirm_delete';
+      
+      return bot.sendMessage(chatId, 
+        `⚠️ **Confirm Deletion**\n\n` +
+        `Category: ${questionToDelete.category}\n` +
+        `Question: ${questionToDelete.question}\n\n` +
+        `Send "CONFIRM" to delete, or anything else to cancel.`
+      );
+    }
+    
+    if (adminState[chatId] && adminState[chatId].step === 'confirm_delete') {
+      if (text === "CONFIRM") {
+        await db.collection('questions').doc(adminState[chatId].questionToDelete.id).delete();
+        await loadQuestions();
+        delete adminState[chatId];
+        return bot.sendMessage(chatId, "✅ Question deleted successfully!", getAdminKeyboard());
+      } else {
+        delete adminState[chatId];
+        return bot.sendMessage(chatId, "❌ Deletion cancelled.", getAdminKeyboard());
+      }
+    }
+    
     // Handle broadcast
     if (text === "📢 Broadcast") {
       broadcastState[chatId] = { step: 'message' };
@@ -848,13 +998,13 @@ bot.on('message', async (msg) => {
         { parse_mode: 'Markdown' }
       );
     }
-
+    
     if (broadcastState[chatId]) {
       if (text === '/cancel') {
         delete broadcastState[chatId];
         return bot.sendMessage(chatId, "❌ Broadcast cancelled.", getAdminKeyboard());
       }
-
+      
       const usersSnapshot = await db.collection('users').get();
       const totalUsers = usersSnapshot.size;
       
@@ -862,7 +1012,7 @@ bot.on('message', async (msg) => {
         delete broadcastState[chatId];
         return bot.sendMessage(chatId, "❌ No users found to broadcast to.", getAdminKeyboard());
       }
-
+      
       await bot.sendMessage(chatId, `📢 Broadcasting to ${totalUsers} users... This may take a while.`);
       
       let successCount = 0;
@@ -872,7 +1022,6 @@ bot.on('message', async (msg) => {
         const userData = userDoc.data();
         const userChatId = userData.chatId;
         
-        // Skip blocked users
         if (blockedUsers.has(userChatId)) continue;
         
         try {
@@ -906,95 +1055,13 @@ bot.on('message', async (msg) => {
         { parse_mode: 'Markdown', ...getAdminKeyboard() }
       );
     }
-
-    // Handle delete question
-    if (text === "🗑 Delete Question") {
-      if (questionsCache.length === 0) {
-        return bot.sendMessage(chatId, "❌ No questions available to delete.", getAdminKeyboard());
-      }
-
-      const questionList = questionsCache.map((q, idx) => 
-        `${idx + 1}. [${q.category}] ${q.question.substring(0, 50)}...`
-      ).join('\n');
-
-      await bot.sendMessage(chatId, `🗑 Select question to delete by sending its number:\n\n${questionList}\n\nSend 0 to cancel.`);
-      adminState[chatId] = { step: 'delete_question' };
-      return;
-    }
-
-    if (adminState[chatId] && adminState[chatId].step === 'delete_question') {
-      const questionNumber = parseInt(text);
-      
-      if (questionNumber === 0) {
-        delete adminState[chatId];
-        return bot.sendMessage(chatId, "❌ Deletion cancelled.", getAdminKeyboard());
-      }
-      
-      if (isNaN(questionNumber) || questionNumber < 1 || questionNumber > questionsCache.length) {
-        return bot.sendMessage(chatId, "❌ Invalid number. Send a valid question number or 0 to cancel.");
-      }
-      
-      const questionToDelete = questionsCache[questionNumber - 1];
-      
-      await bot.sendMessage(chatId, 
-        `⚠️ Are you sure you want to delete this question?\n\n` +
-        `Category: ${questionToDelete.category}\n` +
-        `Question: ${questionToDelete.question}\n\n` +
-        `Send "CONFIRM" to delete, or anything else to cancel.`
-      );
-      
-      adminState[chatId] = { step: 'confirm_delete', questionId: questionToDelete.id };
-      return;
-    }
     
-    if (adminState[chatId] && adminState[chatId].step === 'confirm_delete') {
-      if (text === "CONFIRM") {
-        await db.collection('questions').doc(adminState[chatId].questionId).delete();
-        await loadQuestions();
-        delete adminState[chatId];
-        return bot.sendMessage(chatId, "✅ Question deleted successfully!", getAdminKeyboard());
-      } else {
-        delete adminState[chatId];
-        return bot.sendMessage(chatId, "❌ Deletion cancelled.", getAdminKeyboard());
-      }
-    }
-
-    // Handle list questions
-    if (text === "📋 List Questions") {
-      if (questionsCache.length === 0) {
-        return bot.sendMessage(chatId, "📋 No questions found.", getAdminKeyboard());
-      }
-      
-      let message = "📋 *Question List*\n\n";
-      let count = 0;
-      
-      for (let i = 0; i < questionsCache.length; i++) {
-        const q = questionsCache[i];
-        const newEntry = `${i + 1}. *[${q.category}]* ${q.question.substring(0, 40)}...\n`;
-        
-        if ((message + newEntry).length > 4000) {
-          await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-          message = newEntry;
-        } else {
-          message += newEntry;
-        }
-        count++;
-      }
-      
-      if (message !== "📋 *Question List*\n\n") {
-        await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-      }
-      
-      await bot.sendMessage(chatId, `📊 Total questions: ${count}`, getAdminKeyboard());
-      return;
-    }
-
     // Handle users list
     if (text === "👥 Users") {
       await showAllUsers(chatId);
       return;
     }
-
+    
     // Handle block user
     if (text === "🚫 Block User") {
       blockState[chatId] = { step: 'block' };
@@ -1007,7 +1074,7 @@ bot.on('message', async (msg) => {
         { parse_mode: 'Markdown' }
       );
     }
-
+    
     // Handle unblock user
     if (text === "✅ Unblock User") {
       blockState[chatId] = { step: 'unblock' };
@@ -1019,7 +1086,7 @@ bot.on('message', async (msg) => {
         { parse_mode: 'Markdown' }
       );
     }
-
+    
     // Handle block/unblock input
     if (blockState[chatId]) {
       if (text === '/cancel') {
@@ -1038,13 +1105,13 @@ bot.on('message', async (msg) => {
       }
       return;
     }
-
+    
     // Handle leaderboard for admin
     if (text === "📊 Leaderboard") {
       await showLeaderboard(chatId, true);
       return;
     }
-
+    
     // Handle stats
     if (text === "📈 Stats") {
       const snapshot = await db.collection('users').get();
@@ -1063,27 +1130,30 @@ bot.on('message', async (msg) => {
       await bot.sendMessage(chatId, statsMessage, { parse_mode: 'Markdown', ...getAdminKeyboard() });
       return;
     }
-
+    
     // Handle add question
     if (text === "➕ Add Question") {
       adminState[chatId] = { step: 0 };
-      return bot.sendMessage(chatId, "Send category:");
+      return bot.sendMessage(chatId, "📝 Send category name:");
     }
-
+    
     const state = adminState[chatId];
-    if (state && state.step !== 'delete_question' && state.step !== 'confirm_delete') {
+    if (state && state.step !== 'select_question' && state.step !== 'select_question_delete' && 
+        state.step !== 'choose_field' && state.step !== 'confirm_delete' &&
+        state.step !== 'edit_category' && state.step !== 'edit_question_text' && 
+        state.step !== 'edit_options' && state.step !== 'edit_correct') {
       if (state.step === 0) {
         state.category = text;
         state.step = 1;
-        return bot.sendMessage(chatId, "Send question:");
+        return bot.sendMessage(chatId, "📝 Send the question:");
       }
-
+      
       if (state.step === 1) {
         state.question = text;
         state.step = 2;
-        return bot.sendMessage(chatId, "Send options (comma separated):\nExample: Option 1, Option 2, Option 3, Option 4");
+        return bot.sendMessage(chatId, "📝 Send options (comma separated):\nExample: Option 1, Option 2, Option 3, Option 4");
       }
-
+      
       if (state.step === 2) {
         const options = text.split(",").map(o => o.trim());
         if (options.length < 2) {
@@ -1091,9 +1161,9 @@ bot.on('message', async (msg) => {
         }
         state.options = options;
         state.step = 3;
-        return bot.sendMessage(chatId, `Send correct option number (1-${options.length}):`);
+        return bot.sendMessage(chatId, `📝 Send correct option number (1-${options.length}):`);
       }
-
+      
       if (state.step === 3) {
         const correctIndex = parseInt(text) - 1;
         if (isNaN(correctIndex) || correctIndex < 0 || correctIndex >= state.options.length) {
@@ -1107,17 +1177,17 @@ bot.on('message', async (msg) => {
           correct: correctIndex,
           createdAt: admin.firestore.FieldValue.serverTimestamp()
         });
-
+        
         delete adminState[chatId];
         await loadQuestions();
-
+        
         return bot.sendMessage(chatId, "✅ Question added successfully!", getAdminKeyboard());
       }
     }
-
+    
     return;
   }
-
+  
   // =====================
   // PROFESSIONAL USER HANDLERS
   // =====================
@@ -1125,7 +1195,20 @@ bot.on('message', async (msg) => {
   const categories = getUniqueCategories();
   const cleanCategory = text.replace(/^📚 /, '');
   
-  // Handle category selection with question count display
+  // Handle back to main menu from category selection
+  if (text === "🔙 Back to Main Menu") {
+    delete userSessions[chatId];
+    if (userTimers[chatId]) {
+      clearTimeout(userTimers[chatId]);
+      delete userTimers[chatId];
+    }
+    await db.collection('users').doc(chatId).update({
+      quizActive: false
+    });
+    return bot.sendMessage(chatId, "🏠 **Main Menu**\n\nWhat would you like to do?", getMainKeyboard());
+  }
+  
+  // Handle category selection
   if (categories.includes(cleanCategory)) {
     await db.collection('users').doc(chatId).update({
       category: cleanCategory
@@ -1146,7 +1229,7 @@ bot.on('message', async (msg) => {
     });
   }
   
-  // Handle change category - show categories with question counts
+  // Handle change category
   if (text === "🔄 Change Category") {
     if (userSessions[chatId]) {
       await bot.sendMessage(chatId, "⚠️ Please end your current quiz before changing category.\nTap 'End Quiz' to stop.",
