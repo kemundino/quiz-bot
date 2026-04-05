@@ -1607,7 +1607,7 @@ bot.on('message', async (msg) => {
           await bot.sendMessage(chatId, "⚠️ No categories available. Please try again later.", getMainKeyboard());
         }
       } else {
-        await bot.sendMessage(chatId, "❓ **I didn't understand that.**\n\nPlease use the buttons below to navigate:", 
+        await bot.sendMessage(chatId, "\n\nPlease use the buttons below to navigate:", 
           getMainKeyboard());
       }
       break;
