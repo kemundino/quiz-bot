@@ -43,7 +43,6 @@ let blockState = {};
 let replyState = {};
 let categoryManageState = {};
 let blockedUsers = new Set();
-let userTimers = {};
 let processedPollAnswers = new Set();
 let questionsCache = [];
 let userSessions = {};
@@ -146,14 +145,14 @@ const getCategoryManagementKeyboard = (categories, action) => ({
 });
 
 // =====================
-// PROFESSIONAL USER KEYBOARDS
+// PROFESSIONAL USER KEYBOARDS (LEADERBOARD REMOVED)
 // =====================
 const getMainKeyboard = () => ({
   reply_markup: {
     keyboard: [
       ["🎯 Start Quiz", "📊 My Stats"],
-      ["🏆 Leaderboard", "ℹ️ About"],
-      ["🔄 Change Category", "📩 Contact Admin"]
+      ["ℹ️ About", "🔄 Change Category"],
+      ["📩 Contact Admin"]
     ],
     resize_keyboard: true,
     persistent: true,
@@ -241,7 +240,7 @@ async function getMessage(messageId) {
 }
 
 // =====================
-// START QUIZ
+// START QUIZ (NO TIMER)
 // =====================
 async function startQuiz(chatId) {
   const userRef = db.collection('users').doc(chatId);
@@ -271,7 +270,7 @@ async function startQuiz(chatId) {
     lastQuizStart: admin.firestore.FieldValue.serverTimestamp()
   });
 
-  await bot.sendMessage(chatId, "🎯 **Quiz Started!**\n\nYou have 15 seconds per question.\nGood luck! 🍀", {
+  await bot.sendMessage(chatId, "🎯 **Quiz Started!**\n\nAnswer each question. Next question appears immediately after your answer.\n\nGood luck! 🍀", {
     parse_mode: 'Markdown',
     ...getQuizKeyboard()
   });
@@ -295,7 +294,7 @@ function getQuestionsByCategory(category) {
 }
 
 // =====================
-// SEND QUESTION
+// SEND QUESTION (NO TIMER)
 // =====================
 async function sendQuestion(chatId) {
   try {
@@ -340,17 +339,7 @@ async function sendQuestion(chatId) {
       return endQuiz(chatId, "⚠️ Invalid question data. Quiz ended.");
     }
 
-    if (userTimers[chatId]) {
-      clearTimeout(userTimers[chatId]);
-    }
-
-    userTimers[chatId] = setTimeout(async () => {
-      await bot.sendMessage(chatId, "⏱️ **Time's up!** Moving to next question...", {
-        parse_mode: 'Markdown'
-      });
-      sendQuestion(chatId);
-    }, 15000);
-
+    // No timer – just send the poll
     await bot.sendPoll(
       chatId,
       `📌 **Question ${user.current + 1}/${questions.length}**\n\n${currentQuestion.question}`,
@@ -359,8 +348,8 @@ async function sendQuestion(chatId) {
         type: "quiz",
         correct_option_id: currentQuestion.correct,
         is_anonymous: false,
-        explanation: "Select the correct answer!",
-        open_period: 15
+        explanation: "Select the correct answer!"
+        // open_period removed to allow indefinite time
       }
     );
 
@@ -374,11 +363,6 @@ async function sendQuestion(chatId) {
 // END QUIZ
 // =====================
 async function endQuiz(chatId, message) {
-  if (userTimers[chatId]) {
-    clearTimeout(userTimers[chatId]);
-    delete userTimers[chatId];
-  }
-
   delete userSessions[chatId];
 
   const userRef = db.collection('users').doc(chatId);
@@ -443,7 +427,6 @@ async function showUserStats(chatId) {
   const totalQuestions = questions.length;
   const percentage = user.bestScore ? Math.round((user.bestScore / totalQuestions) * 100) : 0;
   
-  // Only show user's own data - no other users' info
   const statsMessage = `📊 **Your Statistics**\n\n` +
     `👤 **Name:** ${user.firstName || 'Anonymous'}\n` +
     `📚 **Category:** ${user.category || 'Not selected'}\n` +
@@ -460,9 +443,9 @@ async function showUserStats(chatId) {
 }
 
 // =====================
-// SHOW LEADERBOARD (ONLY SHOWS NAMES AND SCORES, NO OTHER DETAILS)
+// LEADERBOARD IS ONLY FOR ADMIN (NOT EXPOSED TO USERS)
 // =====================
-async function showLeaderboard(chatId, isAdmin = false) {
+async function showAdminLeaderboard(chatId) {
   const snapshot = await db.collection('users')
     .where('bestScore', '>', 0)
     .orderBy('bestScore', 'desc')
@@ -470,13 +453,7 @@ async function showLeaderboard(chatId, isAdmin = false) {
     .get();
   
   if (snapshot.empty) {
-    const message = "🏆 **Leaderboard**\n\nNo scores yet! Be the first!";
-    if (isAdmin) {
-      await bot.sendMessage(chatId, message, { parse_mode: 'Markdown', ...getAdminKeyboard() });
-    } else {
-      await bot.sendMessage(chatId, message, { parse_mode: 'Markdown', ...getMainKeyboard() });
-    }
-    return;
+    return bot.sendMessage(chatId, "🏆 **Leaderboard**\n\nNo scores yet!", getAdminKeyboard());
   }
   
   let leaderboard = "🏆 **Top 10 Players** 🏆\n\n";
@@ -484,36 +461,11 @@ async function showLeaderboard(chatId, isAdmin = false) {
   snapshot.docs.forEach((doc, index) => {
     const user = doc.data();
     const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : "📌";
-    // Only show first name or username, no IDs or other sensitive info
     const name = user.firstName || user.username || 'Player';
     leaderboard += `${medal} ${index + 1}. ${name} - **${user.bestScore}** points\n`;
   });
   
-  // Get user's own rank without showing others' details
-  const userRef = db.collection('users').doc(chatId);
-  const userDoc = await userRef.get();
-  
-  if (userDoc.exists && !isAdmin) {
-    const user = userDoc.data();
-    if (user.bestScore > 0) {
-      const allUsers = await db.collection('users')
-        .where('bestScore', '>', 0)
-        .orderBy('bestScore', 'desc')
-        .get();
-      
-      let userRank = 1;
-      for (const doc of allUsers.docs) {
-        if (doc.id === chatId) break;
-        userRank++;
-      }
-      
-      leaderboard += `\n📊 **Your Rank:** #${userRank}\n` +
-        `🎯 **Your Best:** ${user.bestScore} points`;
-    }
-  }
-  
-  const keyboard = isAdmin ? getAdminKeyboard() : getMainKeyboard();
-  await bot.sendMessage(chatId, leaderboard, { parse_mode: 'Markdown', ...keyboard });
+  await bot.sendMessage(chatId, leaderboard, { parse_mode: 'Markdown', ...getAdminKeyboard() });
 }
 
 // =====================
@@ -523,15 +475,14 @@ async function showAbout(chatId) {
   const aboutMessage = `ℹ️ **About This Quiz Bot**\n\n` +
     `🎯 **Features:**\n` +
     `• Multiple categories to choose from\n` +
-    `• Timed questions (15 seconds each)\n` +
+    `• No time limit – answer at your own pace\n` +
     `• Track your best scores\n` +
-    `• Global leaderboard\n` +
     `• Real-time feedback\n` +
     `• Contact admin for support\n\n` +
     `📊 **How to Play:**\n` +
     `1. Select a category\n` +
     `2. Tap "Start Quiz"\n` +
-    `3. Answer within 15 seconds\n` +
+    `3. Answer each question – next one appears immediately\n` +
     `4. Try to beat your best score!\n\n` +
     `🏅 **Ranks:**\n` +
     `• Expert (90%+) 👑\n` +
@@ -604,7 +555,6 @@ async function showAdminMessages(chatId) {
     messageText += `\n📌 Showing 10 of ${messages.length} messages\n`;
   }
   
-  // Create inline keyboard for message actions
   const inlineKeyboard = {
     reply_markup: {
       inline_keyboard: [
@@ -631,7 +581,6 @@ async function viewMessage(adminChatId, messageId) {
     return bot.sendMessage(adminChatId, "❌ Message not found.", getAdminKeyboard());
   }
   
-  // Mark as read
   if (msg.status === "unread") {
     await updateMessageStatus(messageId, "read");
   }
@@ -671,7 +620,6 @@ async function replyToUser(adminChatId, messageId, replyText) {
       return bot.sendMessage(adminChatId, "❌ Message not found.", getAdminKeyboard());
     }
     
-    // Send reply to user
     try {
       const replyMessage = `📩 **Reply from Admin**\n\n` +
         `**Your message:** ${msg.message}\n\n` +
@@ -680,10 +628,8 @@ async function replyToUser(adminChatId, messageId, replyText) {
       
       await bot.sendMessage(msg.userId, replyMessage, { parse_mode: 'Markdown' });
       
-      // Update message status
       await updateMessageStatus(messageId, "replied", replyText, adminChatId);
       
-      // Get admin info
       const adminInfo = await db.collection('users').doc(adminChatId).get();
       const adminName = adminInfo.exists ? adminInfo.data().firstName : 'Admin';
       
@@ -875,8 +821,8 @@ bot.onText(/\/start/, async (msg) => {
     `I'm your personal quiz assistant. Test your knowledge across multiple categories and compete on the global leaderboard!\n\n` +
     `📚 **Ready to begin?**\n` +
     `• Select a category to start\n` +
-    `• Answer questions within 15 seconds\n` +
-    `• Earn points and climb the ranks!\n\n` +
+    `• Answer questions – next question appears immediately\n` +
+    `• Earn points and track your best scores!\n\n` +
     `📩 **Need help?** Use the "Contact Admin" button to send us a message!\n\n` +
     `Choose a category to begin your journey! 🚀`;
 
@@ -962,14 +908,13 @@ bot.onText(/\/categories/, async (msg) => {
 });
 
 // =====================
-// CALLBACK QUERY HANDLER (FIXED)
+// CALLBACK QUERY HANDLER
 // =====================
 bot.on('callback_query', async (callbackQuery) => {
   const chatId = callbackQuery.message.chat.id.toString();
   const userId = callbackQuery.from.id;
   const data = callbackQuery.data;
   
-  // Only admin can use these
   if (userId !== ADMIN_ID) {
     await bot.answerCallbackQuery(callbackQuery.id, { text: "Only admin can use this!" });
     return;
@@ -1015,7 +960,6 @@ bot.on('callback_query', async (callbackQuery) => {
     const messageId = data.replace("reply_", "");
     await bot.answerCallbackQuery(callbackQuery.id);
     
-    // Store the message ID for reply
     replyState[chatId] = { messageId: messageId };
     
     await bot.sendMessage(chatId, 
@@ -1057,7 +1001,7 @@ bot.on('message', async (msg) => {
   }, { merge: true });
 
   // =====================
-  // HANDLE REPLY STATE FOR ADMIN (FIXED)
+  // HANDLE REPLY STATE FOR ADMIN
   // =====================
   if (replyState[chatId] && userId === ADMIN_ID) {
     if (text === '/cancel_reply') {
@@ -1065,7 +1009,6 @@ bot.on('message', async (msg) => {
       return bot.sendMessage(chatId, "❌ Reply cancelled.", getAdminKeyboard());
     }
     
-    // Process the reply
     await replyToUser(chatId, replyState[chatId].messageId, text);
     delete replyState[chatId];
     return;
@@ -1089,13 +1032,11 @@ bot.on('message', async (msg) => {
       });
     }
     
-    // Handle view messages
     if (text === "📩 View Messages") {
       await showAdminMessages(chatId);
       return;
     }
     
-    // Handle category-based question management
     if (text === "📋 List Questions") {
       await showAdminCategoryList(chatId, "list");
       return;
@@ -1111,7 +1052,6 @@ bot.on('message', async (msg) => {
       return;
     }
     
-    // Handle category selection for management
     if (categoryManageState[chatId]) {
       const cleanCategory = text.replace(/^📚 /, '');
       const categories = getUniqueCategories();
@@ -1191,7 +1131,6 @@ bot.on('message', async (msg) => {
       }
     }
     
-    // Handle edit question flow
     if (adminState[chatId] && adminState[chatId].step === 'select_question') {
       const questionNumber = parseInt(text);
       if (isNaN(questionNumber) || questionNumber < 1 || questionNumber > adminState[chatId].questions.length) {
@@ -1282,7 +1221,6 @@ bot.on('message', async (msg) => {
       return bot.sendMessage(chatId, "✅ Correct answer updated successfully!", getAdminKeyboard());
     }
     
-    // Handle delete question flow
     if (adminState[chatId] && adminState[chatId].step === 'select_question_delete') {
       const questionNumber = parseInt(text);
       if (isNaN(questionNumber) || questionNumber < 1 || questionNumber > adminState[chatId].questions.length) {
@@ -1313,7 +1251,6 @@ bot.on('message', async (msg) => {
       }
     }
     
-    // Handle broadcast
     if (text === "📢 Broadcast") {
       broadcastState[chatId] = { step: 'message' };
       return bot.sendMessage(chatId, 
@@ -1380,13 +1317,11 @@ bot.on('message', async (msg) => {
       );
     }
     
-    // Handle users list
     if (text === "👥 Users") {
       await showAllUsers(chatId);
       return;
     }
     
-    // Handle block user
     if (text === "🚫 Block User") {
       blockState[chatId] = { step: 'block' };
       return bot.sendMessage(chatId, 
@@ -1399,7 +1334,6 @@ bot.on('message', async (msg) => {
       );
     }
     
-    // Handle unblock user
     if (text === "✅ Unblock User") {
       blockState[chatId] = { step: 'unblock' };
       return bot.sendMessage(chatId, 
@@ -1411,7 +1345,6 @@ bot.on('message', async (msg) => {
       );
     }
     
-    // Handle block/unblock input
     if (blockState[chatId]) {
       if (text === '/cancel') {
         delete blockState[chatId];
@@ -1430,13 +1363,11 @@ bot.on('message', async (msg) => {
       return;
     }
     
-    // Handle leaderboard for admin
     if (text === "📊 Leaderboard") {
-      await showLeaderboard(chatId, true);
+      await showAdminLeaderboard(chatId);
       return;
     }
     
-    // Handle stats
     if (text === "📈 Stats") {
       const snapshot = await db.collection('users').get();
       const totalUsers = snapshot.size;
@@ -1458,7 +1389,6 @@ bot.on('message', async (msg) => {
       return;
     }
     
-    // Handle add question
     if (text === "➕ Add Question") {
       adminState[chatId] = { step: 0 };
       return bot.sendMessage(chatId, "📝 Send category name:");
@@ -1516,13 +1446,12 @@ bot.on('message', async (msg) => {
   }
   
   // =====================
-  // PROFESSIONAL USER HANDLERS
+  // PROFESSIONAL USER HANDLERS (LEADERBOARD REMOVED)
   // =====================
   
   const categories = getUniqueCategories();
   const cleanCategory = text.replace(/^📚 /, '');
   
-  // Handle Contact Admin
   if (text === "📩 Contact Admin") {
     return bot.sendMessage(chatId, 
       "📩 **Contact Admin**\n\n" +
@@ -1531,19 +1460,16 @@ bot.on('message', async (msg) => {
       "Type /cancel to cancel.",
       { parse_mode: 'Markdown' }
     ).then(() => {
-      // Set user in messaging mode
       userSessions[chatId] = { ...userSessions[chatId], contactingAdmin: true };
     });
   }
   
-  // Handle user sending message to admin
   if (userSessions[chatId]?.contactingAdmin) {
     if (text === '/cancel') {
       delete userSessions[chatId].contactingAdmin;
       return bot.sendMessage(chatId, "❌ Message cancelled.", getMainKeyboard());
     }
     
-    // Save message to database
     const userData = await db.collection('users').doc(chatId).get();
     const user = userData.data();
     
@@ -1564,7 +1490,6 @@ bot.on('message', async (msg) => {
       { parse_mode: 'Markdown', ...getMainKeyboard() }
     );
     
-    // Notify admin
     await bot.sendMessage(ADMIN_ID, 
       `📩 **New Message from User**\n\n` +
       `👤 User: ${user.firstName} (@${msg.from.username || 'No username'})\n` +
@@ -1577,20 +1502,14 @@ bot.on('message', async (msg) => {
     return;
   }
   
-  // Handle back to main menu from category selection
   if (text === "🔙 Back to Main Menu") {
     delete userSessions[chatId];
-    if (userTimers[chatId]) {
-      clearTimeout(userTimers[chatId]);
-      delete userTimers[chatId];
-    }
     await db.collection('users').doc(chatId).update({
       quizActive: false
     });
     return bot.sendMessage(chatId, "🏠 **Main Menu**\n\nWhat would you like to do?", getMainKeyboard());
   }
   
-  // Handle category selection
   if (categories.includes(cleanCategory)) {
     await db.collection('users').doc(chatId).update({
       category: cleanCategory
@@ -1611,7 +1530,6 @@ bot.on('message', async (msg) => {
     });
   }
   
-  // Handle change category
   if (text === "🔄 Change Category") {
     if (userSessions[chatId]?.quizActive) {
       await bot.sendMessage(chatId, "⚠️ Please end your current quiz before changing category.\nTap 'End Quiz' to stop.",
@@ -1622,7 +1540,6 @@ bot.on('message', async (msg) => {
     return;
   }
   
-  // Handle main menu actions
   switch(text) {
     case "🎯 Start Quiz":
       const userDoc = await db.collection('users').doc(chatId).get();
@@ -1645,19 +1562,11 @@ bot.on('message', async (msg) => {
       await showUserStats(chatId);
       break;
       
-    case "🏆 Leaderboard":
-      await showLeaderboard(chatId, false);
-      break;
-      
     case "ℹ️ About":
       await showAbout(chatId);
       break;
       
     case "❌ End Quiz":
-      if (userTimers[chatId]) {
-        clearTimeout(userTimers[chatId]);
-        delete userTimers[chatId];
-      }
       await endQuiz(chatId, "❌ Quiz ended. Ready for another challenge?");
       break;
       
@@ -1694,7 +1603,7 @@ bot.on('message', async (msg) => {
 });
 
 // =====================
-// POLL ANSWERS
+// POLL ANSWERS (NO TIMER, NO DELAY)
 // =====================
 bot.on('poll_answer', async (answer) => {
   try {
@@ -1704,11 +1613,6 @@ bot.on('poll_answer', async (answer) => {
 
     const userId = answer.user.id.toString();
     const selected = answer.option_ids[0];
-
-    if (userTimers[userId]) {
-      clearTimeout(userTimers[userId]);
-      delete userTimers[userId];
-    }
 
     const userRef = db.collection('users').doc(userId);
     const userDoc = await userRef.get();
@@ -1742,7 +1646,8 @@ bot.on('poll_answer', async (answer) => {
       current: user.current
     });
 
-    setTimeout(() => sendQuestion(userId), 2000);
+    // Immediately send next question (no delay)
+    await sendQuestion(userId);
 
   } catch (err) {
     console.error("❌ poll_answer error:", err);
