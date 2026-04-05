@@ -450,7 +450,7 @@ async function showAbout(chatId) {
     `• No time limit – answer at your own pace\n` +
     `• Track your best scores\n` +
     `• Real-time feedback\n` +
-    `• Contact admin for support\n\n` +
+    `• Contact for support\n\n` +
     `📊 **How to Use:**\n` +
     `1. Select a category\n` +
     `2. Tap "Start Quiz"\n` +
@@ -458,7 +458,7 @@ async function showAbout(chatId) {
     `4. Try to beat your best score!\n\n` +
     `🏅 **Ranks:**\n` +
     `• Use My stats to see your progress\n` +
-    `📩 **Need help?** Use "Contact Admin" button to send us a message!`;
+    `📩 **Need help?** Use "Contact" button to send us a message!`;
   
   await bot.sendMessage(chatId, aboutMessage, {
     parse_mode: 'Markdown',
@@ -584,7 +584,7 @@ async function replyToUser(adminChatId, messageId, replyText) {
       const replyMessage = `📩 **Reply from Admin**\n\n` +
         `**Your message:** ${msg.message}\n\n` +
         `**Admin's response:**\n${replyText}\n\n` +
-        `💡 You can reply to this message by using the "Contact Admin" button.`;
+        `💡 You can reply to this message by using the "Contact" button.`;
       
       await bot.sendMessage(msg.userId, replyMessage, { parse_mode: 'Markdown' });
       
@@ -771,7 +771,7 @@ bot.onText(/\/start/, async (msg) => {
     `• Select a category to start\n` +
     `• Answer questions – next question appears immediately\n` +
     `• Earn points and track your best scores!\n\n` +
-    `📩 **Need help?** Use the "Contact Admin" button to send us a message!\n\n` +
+    `📩 **Need help?** Use the "Contact" button to send us a message!\n\n` +
     `Choose a category to begin your journey! 🚀`;
 
   if (userId !== ADMIN_ID) {
@@ -1400,7 +1400,7 @@ bot.on('message', async (msg) => {
   
   if (text === "📩 Contact Admin") {
     return bot.sendMessage(chatId, 
-      "📩 **Contact Admin**\n\n" +
+      "📩 **Contact**\n\n" +
       "Please send your message below. The administrator will respond as soon as possible.\n\n" +
       "You can ask questions, report issues, or give feedback.\n\n" +
       "Type /cancel to cancel.",
