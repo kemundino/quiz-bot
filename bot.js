@@ -526,7 +526,7 @@ async function showAllUsers(chatId) {
 }
 
 // =====================
-// SHOW MESSAGES FOR ADMIN (SORTED NEWEST FIRST)
+// SHOW MESSAGES FOR ADMIN (SORTED NEWEST FIRST) - WITH USERNAME + NAME
 // =====================
 async function showAdminMessages(chatId) {
   const messages = await getMessages();
@@ -545,7 +545,17 @@ async function showAdminMessages(chatId) {
     const statusIcon = msg.status === "unread" ? "🔴" : msg.status === "replied" ? "✅" : "📖";
     const date = msg.timestamp?.toDate().toLocaleString() || 'Unknown';
     const preview = msg.message.substring(0, 40);
-    messageText += `${statusIcon} **${i + 1}.** From: ${msg.firstName}\n`;
+    
+    // Build display name: @username (FirstName)
+    let senderDisplay = '';
+    if (msg.username && msg.username !== "Unknown") {
+      senderDisplay = `@${msg.username}`;
+      if (msg.firstName && msg.firstName !== "Anonymous") senderDisplay += ` (${msg.firstName})`;
+    } else {
+      senderDisplay = msg.firstName || 'Anonymous';
+    }
+    
+    messageText += `${statusIcon} **${i + 1}.** From: ${senderDisplay}\n`;
     messageText += `   📝 ${preview}...\n`;
     messageText += `   🕒 ${date}\n`;
     messageText += `   🆔 \`${msg.id}\`\n\n`;
@@ -585,8 +595,17 @@ async function viewMessage(adminChatId, messageId) {
     await updateMessageStatus(messageId, "read");
   }
   
+  // Build display name with username
+  let senderDisplay = '';
+  if (msg.username && msg.username !== "Unknown") {
+    senderDisplay = `@${msg.username}`;
+    if (msg.firstName && msg.firstName !== "Anonymous") senderDisplay += ` (${msg.firstName})`;
+  } else {
+    senderDisplay = msg.firstName || 'Anonymous';
+  }
+  
   const messageText = `📨 **Message Details**\n\n` +
-    `👤 **From:** ${msg.firstName} (@${msg.username || 'No username'})\n` +
+    `👤 **From:** ${senderDisplay}\n` +
     `🆔 **User ID:** \`${msg.userId}\`\n` +
     `📅 **Time:** ${msg.timestamp?.toDate().toLocaleString() || 'Unknown'}\n` +
     `📝 **Message:**\n${msg.message}\n\n` +
@@ -931,7 +950,16 @@ bot.on('callback_query', async (callbackQuery) => {
       const msg = messages[i];
       const statusIcon = msg.status === "unread" ? "🔴" : msg.status === "replied" ? "✅" : "📖";
       const date = msg.timestamp?.toDate().toLocaleString() || 'Unknown';
-      allMessages += `${statusIcon} **${i + 1}.** ${msg.firstName}: ${msg.message.substring(0, 50)}...\n`;
+      
+      let senderDisplay = '';
+      if (msg.username && msg.username !== "Unknown") {
+        senderDisplay = `@${msg.username}`;
+        if (msg.firstName && msg.firstName !== "Anonymous") senderDisplay += ` (${msg.firstName})`;
+      } else {
+        senderDisplay = msg.firstName || 'Anonymous';
+      }
+      
+      allMessages += `${statusIcon} **${i + 1}.** ${senderDisplay}: ${msg.message.substring(0, 50)}...\n`;
       allMessages += `   🕒 ${date}\n`;
       allMessages += `   🆔 \`${msg.id}\`\n\n`;
       
@@ -1607,8 +1635,8 @@ bot.on('message', async (msg) => {
           await bot.sendMessage(chatId, "⚠️ No categories available. Please try again later.", getMainKeyboard());
         }
       } else {
-        await bot.sendMessage(chatId, "\n\nPlease use the buttons below to navigate:", 
-          getMainKeyboard());
+        // Only show the navigation prompt (without "I didn't understand")
+        await bot.sendMessage(chatId, "Please use the buttons below to navigate:", getMainKeyboard());
       }
       break;
   }
