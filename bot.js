@@ -489,7 +489,7 @@ async function showAbout(chatId) {
     `4. Try to beat your best score!\n\n` +
     `🏅 **Ranks:**\n` +
     `• Use My stats to see your progress\n` +
-    `📩 **Need help?** Use "Contact" button to send us a message!`;
+    `📩 **Need help?** Use "Contact" button or just type any message!`;
   
   await bot.sendMessage(chatId, aboutMessage, {
     parse_mode: 'Markdown',
@@ -546,7 +546,6 @@ async function showAdminMessages(chatId) {
     const date = msg.timestamp?.toDate().toLocaleString() || 'Unknown';
     const preview = msg.message.substring(0, 40);
     
-    // Build display name: @username (FirstName)
     let senderDisplay = '';
     if (msg.username && msg.username !== "Unknown") {
       senderDisplay = `@${msg.username}`;
@@ -595,7 +594,6 @@ async function viewMessage(adminChatId, messageId) {
     await updateMessageStatus(messageId, "read");
   }
   
-  // Build display name with username
   let senderDisplay = '';
   if (msg.username && msg.username !== "Unknown") {
     senderDisplay = `@${msg.username}`;
@@ -643,7 +641,7 @@ async function replyToUser(adminChatId, messageId, replyText) {
       const replyMessage = `📩 **Reply from Admin**\n\n` +
         `**Your message:** ${msg.message}\n\n` +
         `**Admin's response:**\n${replyText}\n\n` +
-        `💡 You can reply to this message by using the "Contact" button.`;
+        `💡 You can reply to this message by using the "Contact" button or just typing any message.`;
       
       await bot.sendMessage(msg.userId, replyMessage, { parse_mode: 'Markdown' });
       
@@ -810,6 +808,31 @@ async function showAdminCategoryList(chatId, action) {
 }
 
 // =====================
+// FUNCTION TO FORWARD ANY USER MESSAGE TO ADMIN
+// =====================
+async function forwardUserMessageToAdmin(userId, username, firstName, messageText, messageId) {
+  // Save to database
+  await saveUserMessage(userId, username, firstName, messageText, messageId);
+  
+  // Notify admin
+  const adminMessage = `📩 **New Message from User**\n\n` +
+    `👤 User: ${firstName} (@${username || 'No username'})\n` +
+    `🆔 ID: ${userId}\n` +
+    `📝 Message: ${messageText}\n\n` +
+    `Use /viewmessage to see all messages.`;
+  
+  await bot.sendMessage(ADMIN_ID, adminMessage, { parse_mode: 'Markdown' });
+  
+  // Confirm to user
+  await bot.sendMessage(userId, 
+    "✅ **Message Sent!**\n\n" +
+    "Your message has been sent to the administrator. You will receive a reply soon.\n\n" +
+    "Thank you for reaching out! 🙏",
+    { parse_mode: 'Markdown', ...getMainKeyboard() }
+  );
+}
+
+// =====================
 // START COMMAND
 // =====================
 bot.onText(/\/start/, async (msg) => {
@@ -839,7 +862,7 @@ bot.onText(/\/start/, async (msg) => {
     `• Select a category to start\n` +
     `• Answer questions – next question appears immediately\n` +
     `• Earn points and track your best scores!\n\n` +
-    `📩 **Need help?** Use the "Contact" button to send us a message!\n\n` +
+    `📩 **Need help?** Use the "Contact" button or **just type any message** – I'll forward it to the admin!\n\n` +
     `Choose a category to begin your journey! 🚀`;
 
   if (userId !== ADMIN_ID) {
@@ -1479,18 +1502,7 @@ bot.on('message', async (msg) => {
   const categories = getUniqueCategories();
   const cleanCategory = text.replace(/^📚 /, '');
   
-  if (text === "📩 Contact") {
-    return bot.sendMessage(chatId, 
-      "📩 **Contact**\n\n" +
-      "Please send your message below. The administrator will respond as soon as possible.\n\n" +
-      "You can ask questions, report issues, or give feedback.\n\n" +
-      "Type /cancel to cancel.",
-      { parse_mode: 'Markdown' }
-    ).then(() => {
-      userSessions[chatId] = { ...userSessions[chatId], contactingAdmin: true };
-    });
-  }
-  
+  // If user is currently in "contactingAdmin" mode (from button), handle that
   if (userSessions[chatId]?.contactingAdmin) {
     if (text === '/cancel') {
       delete userSessions[chatId].contactingAdmin;
@@ -1529,6 +1541,19 @@ bot.on('message', async (msg) => {
     return;
   }
   
+  // If user pressed the "Contact" button, start the contactingAdmin mode
+  if (text === "📩 Contact") {
+    userSessions[chatId] = { ...userSessions[chatId], contactingAdmin: true };
+    return bot.sendMessage(chatId, 
+      "📩 **Contact**\n\n" +
+      "Please send your message below. The administrator will respond as soon as possible.\n\n" +
+      "You can ask questions, report issues, or give feedback.\n\n" +
+      "Type /cancel to cancel.",
+      { parse_mode: 'Markdown' }
+    );
+  }
+  
+  // Handle back to main menu
   if (text === "🔙 Back to Main Menu") {
     delete userSessions[chatId];
     await db.collection('users').doc(chatId).update({
@@ -1537,6 +1562,7 @@ bot.on('message', async (msg) => {
     return bot.sendMessage(chatId, "🏠 **Main Menu**\n\nWhat would you like to do?", getMainKeyboard());
   }
   
+  // Handle category selection
   if (categories.includes(cleanCategory)) {
     await db.collection('users').doc(chatId).update({
       category: cleanCategory
@@ -1557,6 +1583,7 @@ bot.on('message', async (msg) => {
     });
   }
   
+  // Handle change category
   if (text === "🔄 Change Category") {
     if (userSessions[chatId]?.quizActive) {
       await bot.sendMessage(chatId, "⚠️ Please end your current quiz before changing category.\nTap 'End Quiz' to stop.",
@@ -1567,6 +1594,7 @@ bot.on('message', async (msg) => {
     return;
   }
   
+  // Handle main menu actions
   switch(text) {
     case "🎯 Start Quiz":
       const userDoc = await db.collection('users').doc(chatId).get();
@@ -1618,12 +1646,13 @@ bot.on('message', async (msg) => {
       break;
       
     default:
+      // Any other text message: forward to admin (if user has a category and is not in quiz)
       const currentUser = await db.collection('users').doc(chatId).get();
       if (currentUser.exists && currentUser.data().quizActive) {
+        // Ignore messages during quiz (they might interfere with poll answers)
         return;
       }
       
-      // Check if user has selected a category yet
       const userDataDefault = currentUser.data();
       if (!userDataDefault || !userDataDefault.category) {
         // User hasn't selected category, show category selection again
@@ -1635,8 +1664,14 @@ bot.on('message', async (msg) => {
           await bot.sendMessage(chatId, "⚠️ No categories available. Please try again later.", getMainKeyboard());
         }
       } else {
-        // Only show the navigation prompt (without "I didn't understand")
-        await bot.sendMessage(chatId, "Please use the buttons below to navigate:", getMainKeyboard());
+        // User has a category – treat this as a message to admin
+        await forwardUserMessageToAdmin(
+          chatId,
+          msg.from.username,
+          userDataDefault.firstName,
+          text,
+          msg.message_id
+        );
       }
       break;
   }
