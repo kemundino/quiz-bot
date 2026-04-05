@@ -1,27 +1,16 @@
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const admin = require('firebase-admin');
-
-// =====================
 // CONFIG
-// =====================
+
 const token = process.env.TOKEN;
 const ADMIN_ID = 1983262664;
-
-// =====================
 // EXPRESS SETUP
-// =====================
 const app = express();
 app.use(express.json());
-
-// =====================
 // BOT (WEBHOOK MODE)
-// =====================
 const bot = new TelegramBot(token);
-
-// =====================
 // FIREBASE SETUP
-// =====================
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
 
@@ -32,10 +21,7 @@ admin.initializeApp({
 const db = admin.firestore();
 
 console.log("🔥 Bot + Firestore running...");
-
-// =====================
 // STATE
-// =====================
 let adminState = {};
 let editState = {};
 let broadcastState = {};
@@ -46,10 +32,7 @@ let blockedUsers = new Set();
 let processedPollAnswers = new Set();
 let questionsCache = [];
 let userSessions = {};
-
-// =====================
 // LOAD BLOCKED USERS FROM FIREBASE
-// =====================
 async function loadBlockedUsers() {
   const snapshot = await db.collection('blocked').get();
   blockedUsers.clear();
@@ -58,10 +41,8 @@ async function loadBlockedUsers() {
   });
   console.log(`📋 Loaded ${blockedUsers.size} blocked users`);
 }
-
-// =====================
 // LOAD QUESTIONS CACHE
-// =====================
+
 async function loadQuestions() {
   const snapshot = await db.collection('questions')
     .orderBy("createdAt", "desc")
@@ -74,29 +55,22 @@ async function loadQuestions() {
   
   console.log(`📚 Loaded ${questionsCache.length} questions from ${getUniqueCategories().length} categories`);
 }
-
-// =====================
 // INITIALIZE
-// =====================
+
 async function initialize() {
   await loadQuestions();
   await loadBlockedUsers();
 }
-
 initialize();
 setInterval(loadQuestions, 1000 * 60 * 5);
 setInterval(loadBlockedUsers, 1000 * 60);
-
-// =====================
 // CLEANUP MEMORY
-// =====================
+
 setInterval(() => {
   processedPollAnswers.clear();
 }, 1000 * 60 * 60);
-
-// =====================
 // WEBHOOK
-// =====================
+
 app.post(`/bot${token}`, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
@@ -107,17 +81,13 @@ const WEBHOOK_URL = `https://quiz-bot-vxyx.onrender.com/bot${token}`;
 bot.setWebHook(WEBHOOK_URL)
   .then(() => console.log("✅ Webhook set"))
   .catch(err => console.error("Webhook error:", err));
-
-// =====================
 // ROOT
-// =====================
+
 app.get('/', (req, res) => {
   res.send("Bot is running ✅");
 });
-
-// =====================
 // ADMIN KEYBOARDS
-// =====================
+
 const getAdminKeyboard = () => ({
   reply_markup: {
     keyboard: [
@@ -125,8 +95,8 @@ const getAdminKeyboard = () => ({
       ["🗑 Delete Question", "📋 List Questions"],
       ["📢 Broadcast", "👥 Users"],
       ["🚫 Block User", "✅ Unblock User"],
-      ["📊 Leaderboard (by recent)", "📈 Stats"],
-      ["📩 View Messages", "🔙 Main Menu"]
+      ["📊 Leaderboard ", "📈 Stats"],
+      ["📩 View Messages", "🔙 Back"]
     ],
     resize_keyboard: true,
     input_field_placeholder: "Choose an option..."
@@ -143,16 +113,14 @@ const getCategoryManagementKeyboard = (categories, action) => ({
     input_field_placeholder: "Select a category..."
   }
 });
-
-// =====================
 // PROFESSIONAL USER KEYBOARDS
-// =====================
+
 const getMainKeyboard = () => ({
   reply_markup: {
     keyboard: [
       ["🎯 Start Quiz", "📊 My Stats"],
       ["ℹ️ About", "🔄 Change Category"],
-      ["📩 Contact Admin"]
+      ["📩 Contact"]
     ],
     resize_keyboard: true,
     persistent: true,
@@ -180,11 +148,7 @@ const getQuizKeyboard = () => ({
     input_field_placeholder: "Quiz in progress..."
   }
 });
-
-// =====================
 // CONTACT MESSAGE FUNCTIONS
-// =====================
-
 // Save user message to Firebase
 async function saveUserMessage(userId, username, firstName, message, messageId) {
   const messageRef = db.collection('contact_messages').doc();
@@ -203,7 +167,6 @@ async function saveUserMessage(userId, username, firstName, message, messageId) 
   });
   return messageRef.id;
 }
-
 // Get all messages for admin (sorted newest first)
 async function getMessages(status = null) {
   let query = db.collection('contact_messages').orderBy('timestamp', 'desc');
@@ -211,11 +174,9 @@ async function getMessages(status = null) {
   if (status) {
     query = query.where('status', '==', status);
   }
-  
   const snapshot = await query.get();
   return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 }
-
 // Update message status
 async function updateMessageStatus(messageId, status, reply = null, adminId = null) {
   const updateData = { status: status };
@@ -226,22 +187,17 @@ async function updateMessageStatus(messageId, status, reply = null, adminId = nu
   }
   await db.collection('contact_messages').doc(messageId).update(updateData);
 }
-
 // Delete message
 async function deleteMessage(messageId) {
   await db.collection('contact_messages').doc(messageId).delete();
 }
-
 // Get single message
 async function getMessage(messageId) {
   const messageDoc = await db.collection('contact_messages').doc(messageId).get();
   if (!messageDoc.exists) return null;
   return { id: messageDoc.id, ...messageDoc.data() };
 }
-
-// =====================
 // START QUIZ
-// =====================
 async function startQuiz(chatId) {
   const userRef = db.collection('users').doc(chatId);
   const userDoc = await userRef.get();
@@ -277,10 +233,8 @@ async function startQuiz(chatId) {
 
   sendQuestion(chatId);
 }
-
-// =====================
 // GET UNIQUE CATEGORIES
-// =====================
+
 function getUniqueCategories() {
   const categories = [...new Set(questionsCache.map(q => q.category).filter(Boolean))];
   return categories;
@@ -443,6 +397,9 @@ async function showUserStats(chatId) {
 // =====================
 // ADMIN LEADERBOARD (ORDERED BY RECENT COMPLETION)
 // =====================
+// =====================
+// ADMIN LEADERBOARD (ORDERED BY RECENT COMPLETION, WITH USERNAME)
+// =====================
 async function showAdminLeaderboard(chatId) {
   // Get users who have completed at least one quiz, ordered by lastQuizFinish descending
   const snapshot = await db.collection('users')
@@ -459,20 +416,30 @@ async function showAdminLeaderboard(chatId) {
   
   snapshot.docs.forEach((doc, index) => {
     const user = doc.data();
-    const name = user.firstName || user.username || 'Player';
+    
+    // Build display name: username in front of first name
+    let displayName = '';
+    if (user.username) {
+      displayName = `@${user.username}`;
+      if (user.firstName) displayName += ` (${user.firstName})`;
+    } else {
+      displayName = user.firstName || 'Player';
+    }
+    
     const score = user.lastQuizScore || 0;
-    const totalQuestions = getQuestionsByCategory(user.category || getUniqueCategories()[0]).length;
+    // Get total questions for the user's category (or first available category)
+    const category = user.category || getUniqueCategories()[0];
+    const totalQuestions = getQuestionsByCategory(category).length;
     const finishTime = user.lastQuizFinish?.toDate();
     const timeStr = finishTime ? finishTime.toLocaleString() : 'Unknown';
     
-    leaderboard += `${index + 1}. ${name}\n`;
+    leaderboard += `${index + 1}. ${displayName}\n`;
     leaderboard += `   📊 Score: ${score}/${totalQuestions}\n`;
     leaderboard += `   🕒 Completed: ${timeStr}\n\n`;
   });
   
   await bot.sendMessage(chatId, leaderboard, { parse_mode: 'Markdown', ...getAdminKeyboard() });
 }
-
 // =====================
 // SHOW ABOUT INFO
 // =====================
@@ -484,17 +451,13 @@ async function showAbout(chatId) {
     `• Track your best scores\n` +
     `• Real-time feedback\n` +
     `• Contact admin for support\n\n` +
-    `📊 **How to Play:**\n` +
+    `📊 **How to Use:**\n` +
     `1. Select a category\n` +
     `2. Tap "Start Quiz"\n` +
     `3. Answer each question – next one appears immediately\n` +
     `4. Try to beat your best score!\n\n` +
     `🏅 **Ranks:**\n` +
-    `• Expert (90%+) 👑\n` +
-    `• Advanced (70%+) 🥇\n` +
-    `• Intermediate (50%+) 🥈\n` +
-    `• Beginner (<50%) 🥉\n\n` +
-    `💡 **Tip:** Practice makes perfect! Keep playing to improve your rank.\n\n` +
+    `• Use My stats to see your progress\n` +
     `📩 **Need help?** Use "Contact Admin" button to send us a message!`;
   
   await bot.sendMessage(chatId, aboutMessage, {
@@ -502,10 +465,8 @@ async function showAbout(chatId) {
     ...getMainKeyboard()
   });
 }
-
-// =====================
 // SHOW ALL USERS FOR ADMIN (ONLY ADMIN CAN SEE THIS)
-// =====================
+
 async function showAllUsers(chatId) {
   const snapshot = await db.collection('users').get();
   const users = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -530,10 +491,7 @@ async function showAllUsers(chatId) {
   await bot.sendMessage(chatId, "To block/unblock a user, use:\n`/block USER_ID`\n`/unblock USER_ID`\n\nOr use the Block/Unblock buttons.", 
     { parse_mode: 'Markdown', ...getAdminKeyboard() });
 }
-
-// =====================
 // SHOW MESSAGES FOR ADMIN (SORTED NEWEST FIRST)
-// =====================
 async function showAdminMessages(chatId) {
   const messages = await getMessages(); // already sorted desc by timestamp
   
@@ -576,8 +534,6 @@ async function showAdminMessages(chatId) {
     ...inlineKeyboard
   });
 }
-
-// =====================
 // VIEW SINGLE MESSAGE
 // =====================
 async function viewMessage(adminChatId, messageId) {
@@ -614,8 +570,6 @@ async function viewMessage(adminChatId, messageId) {
     ...replyKeyboard
   });
 }
-
-// =====================
 // REPLY TO USER
 // =====================
 async function replyToUser(adminChatId, messageId, replyText) {
@@ -657,8 +611,6 @@ async function replyToUser(adminChatId, messageId, replyText) {
     await bot.sendMessage(adminChatId, "❌ Failed to process reply. Please try again.", getAdminKeyboard());
   }
 }
-
-// =====================
 // BLOCK USER
 // =====================
 async function blockUser(adminChatId, userIdToBlock) {
@@ -697,8 +649,6 @@ async function blockUser(adminChatId, userIdToBlock) {
     await bot.sendMessage(adminChatId, "❌ Failed to block user. Please try again.", getAdminKeyboard());
   }
 }
-
-// =====================
 // UNBLOCK USER
 // =====================
 async function unblockUser(adminChatId, userIdToUnblock) {
@@ -736,7 +686,6 @@ async function unblockUser(adminChatId, userIdToUnblock) {
   }
 }
 
-// =====================
 // SHOW CATEGORIES WITH QUESTIONS COUNT
 // =====================
 async function showCategoriesWithCount(chatId) {
@@ -761,8 +710,6 @@ async function showCategoriesWithCount(chatId) {
     ...getCategoryKeyboard(categories)
   });
 }
-
-// =====================
 // ADMIN CATEGORY MANAGEMENT
 // =====================
 async function showAdminCategoryList(chatId, action) {
@@ -795,8 +742,6 @@ async function showAdminCategoryList(chatId, action) {
     { parse_mode: 'Markdown', ...getCategoryManagementKeyboard(categories, action) }
   );
 }
-
-// =====================
 // START COMMAND
 // =====================
 bot.onText(/\/start/, async (msg) => {
@@ -847,8 +792,6 @@ bot.onText(/\/start/, async (msg) => {
     });
   }
 });
-
-// =====================
 // COMMAND HANDLERS FOR ADMIN
 // =====================
 bot.onText(/\/block (.+)/, async (msg, match) => {
@@ -909,8 +852,6 @@ bot.onText(/\/categories/, async (msg) => {
   const message = `📚 **Available Categories:**\n\n${categories.map((c, i) => `${i+1}. ${c}`).join('\n')}\n\nTotal: ${categories.length}`;
   await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
 });
-
-// =====================
 // CALLBACK QUERY HANDLER
 // =====================
 bot.on('callback_query', async (callbackQuery) => {
@@ -968,7 +909,7 @@ bot.on('callback_query', async (callbackQuery) => {
     replyState[chatId] = { messageId: messageId };
     
     await bot.sendMessage(chatId, 
-      `💬 **Reply to Message**\n\n` +
+      `💬 **Reply **\n\n` +
       `Please send your reply message below. The user will receive it immediately.\n\n` +
       `Message ID: \`${messageId}\`\n\n` +
       `To cancel, send /cancel_reply`,
