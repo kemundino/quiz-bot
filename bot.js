@@ -125,7 +125,7 @@ const getAdminKeyboard = () => ({
       ["🗑 Delete Question", "📋 List Questions"],
       ["📢 Broadcast", "👥 Users"],
       ["🚫 Block User", "✅ Unblock User"],
-      ["📊 Leaderboard", "📈 Stats"],
+      ["📊 Leaderboard (by recent)", "📈 Stats"],
       ["📩 View Messages", "🔙 Main Menu"]
     ],
     resize_keyboard: true,
@@ -145,7 +145,7 @@ const getCategoryManagementKeyboard = (categories, action) => ({
 });
 
 // =====================
-// PROFESSIONAL USER KEYBOARDS (LEADERBOARD REMOVED)
+// PROFESSIONAL USER KEYBOARDS
 // =====================
 const getMainKeyboard = () => ({
   reply_markup: {
@@ -204,7 +204,7 @@ async function saveUserMessage(userId, username, firstName, message, messageId) 
   return messageRef.id;
 }
 
-// Get all messages for admin
+// Get all messages for admin (sorted newest first)
 async function getMessages(status = null) {
   let query = db.collection('contact_messages').orderBy('timestamp', 'desc');
   
@@ -240,7 +240,7 @@ async function getMessage(messageId) {
 }
 
 // =====================
-// START QUIZ (NO TIMER)
+// START QUIZ
 // =====================
 async function startQuiz(chatId) {
   const userRef = db.collection('users').doc(chatId);
@@ -331,7 +331,7 @@ async function sendQuestion(chatId) {
         `${feedback}\n\n` +
         `🏅 ${getRankEmoji(percentage)} ${getRankTitle(percentage)}`;
 
-      await endQuiz(chatId, completionMessage);
+      await endQuiz(chatId, completionMessage, true); // true = completed
       return;
     }
 
@@ -339,7 +339,6 @@ async function sendQuestion(chatId) {
       return endQuiz(chatId, "⚠️ Invalid question data. Quiz ended.");
     }
 
-    // No timer – just send the poll
     await bot.sendPoll(
       chatId,
       `📌 **Question ${user.current + 1}/${questions.length}**\n\n${currentQuestion.question}`,
@@ -349,7 +348,6 @@ async function sendQuestion(chatId) {
         correct_option_id: currentQuestion.correct,
         is_anonymous: false,
         explanation: "Select the correct answer!"
-        // open_period removed to allow indefinite time
       }
     );
 
@@ -360,9 +358,9 @@ async function sendQuestion(chatId) {
 }
 
 // =====================
-// END QUIZ
+// END QUIZ (with optional completed flag)
 // =====================
-async function endQuiz(chatId, message) {
+async function endQuiz(chatId, message, isCompleted = false) {
   delete userSessions[chatId];
 
   const userRef = db.collection('users').doc(chatId);
@@ -370,23 +368,23 @@ async function endQuiz(chatId, message) {
   
   if (userDoc.exists) {
     const user = userDoc.data();
+    const updateData = { quizActive: false };
     
     if (user.score > (user.bestScore || 0)) {
-      await userRef.update({ 
-        bestScore: user.score,
-        lastQuizScore: user.score,
-        quizActive: false
-      });
-      
-      if (message.includes("Quiz Complete")) {
-        await bot.sendMessage(chatId, "🏆 **New Personal Best!** 🏆", {
-          parse_mode: 'Markdown'
-        });
-      }
-    } else {
-      await userRef.update({ 
-        lastQuizScore: user.score,
-        quizActive: false 
+      updateData.bestScore = user.score;
+    }
+    updateData.lastQuizScore = user.score;
+    
+    // If quiz was fully completed, record the finish timestamp
+    if (isCompleted) {
+      updateData.lastQuizFinish = admin.firestore.FieldValue.serverTimestamp();
+    }
+    
+    await userRef.update(updateData);
+    
+    if (isCompleted && user.score > (user.bestScore || 0)) {
+      await bot.sendMessage(chatId, "🏆 **New Personal Best!** 🏆", {
+        parse_mode: 'Markdown'
       });
     }
   }
@@ -443,26 +441,33 @@ async function showUserStats(chatId) {
 }
 
 // =====================
-// LEADERBOARD IS ONLY FOR ADMIN (NOT EXPOSED TO USERS)
+// ADMIN LEADERBOARD (ORDERED BY RECENT COMPLETION)
 // =====================
 async function showAdminLeaderboard(chatId) {
+  // Get users who have completed at least one quiz, ordered by lastQuizFinish descending
   const snapshot = await db.collection('users')
-    .where('bestScore', '>', 0)
-    .orderBy('bestScore', 'desc')
-    .limit(10)
+    .where('lastQuizFinish', '!=', null)
+    .orderBy('lastQuizFinish', 'desc')
+    .limit(20)
     .get();
   
   if (snapshot.empty) {
-    return bot.sendMessage(chatId, "🏆 **Leaderboard**\n\nNo scores yet!", getAdminKeyboard());
+    return bot.sendMessage(chatId, "🏆 **Leaderboard (Recent Completions)**\n\nNo quiz completions yet.", getAdminKeyboard());
   }
   
-  let leaderboard = "🏆 **Top 10 Players** 🏆\n\n";
+  let leaderboard = "🏆 **Recent Quiz Completions** 🏆\n\n";
   
   snapshot.docs.forEach((doc, index) => {
     const user = doc.data();
-    const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : "📌";
     const name = user.firstName || user.username || 'Player';
-    leaderboard += `${medal} ${index + 1}. ${name} - **${user.bestScore}** points\n`;
+    const score = user.lastQuizScore || 0;
+    const totalQuestions = getQuestionsByCategory(user.category || getUniqueCategories()[0]).length;
+    const finishTime = user.lastQuizFinish?.toDate();
+    const timeStr = finishTime ? finishTime.toLocaleString() : 'Unknown';
+    
+    leaderboard += `${index + 1}. ${name}\n`;
+    leaderboard += `   📊 Score: ${score}/${totalQuestions}\n`;
+    leaderboard += `   🕒 Completed: ${timeStr}\n\n`;
   });
   
   await bot.sendMessage(chatId, leaderboard, { parse_mode: 'Markdown', ...getAdminKeyboard() });
@@ -527,10 +532,10 @@ async function showAllUsers(chatId) {
 }
 
 // =====================
-// SHOW MESSAGES FOR ADMIN
+// SHOW MESSAGES FOR ADMIN (SORTED NEWEST FIRST)
 // =====================
 async function showAdminMessages(chatId) {
-  const messages = await getMessages();
+  const messages = await getMessages(); // already sorted desc by timestamp
   
   if (messages.length === 0) {
     return bot.sendMessage(chatId, "📭 No messages from users yet.", getAdminKeyboard());
@@ -538,16 +543,17 @@ async function showAdminMessages(chatId) {
   
   const unreadCount = messages.filter(m => m.status === "unread").length;
   
-  let messageText = `📩 **User Messages**\n\n`;
+  let messageText = `📩 **User Messages** (newest first)\n\n`;
   messageText += `📊 Total: ${messages.length} | 🔴 Unread: ${unreadCount}\n\n`;
-  messageText += `Select a message to reply:\n\n`;
   
   for (let i = 0; i < Math.min(messages.length, 10); i++) {
     const msg = messages[i];
     const statusIcon = msg.status === "unread" ? "🔴" : msg.status === "replied" ? "✅" : "📖";
+    const date = msg.timestamp?.toDate().toLocaleString() || 'Unknown';
     const preview = msg.message.substring(0, 40);
     messageText += `${statusIcon} **${i + 1}.** From: ${msg.firstName}\n`;
     messageText += `   📝 ${preview}...\n`;
+    messageText += `   🕒 ${date}\n`;
     messageText += `   🆔 \`${msg.id}\`\n\n`;
   }
   
@@ -610,7 +616,7 @@ async function viewMessage(adminChatId, messageId) {
 }
 
 // =====================
-// REPLY TO USER (FIXED)
+// REPLY TO USER
 // =====================
 async function replyToUser(adminChatId, messageId, replyText) {
   try {
@@ -629,9 +635,6 @@ async function replyToUser(adminChatId, messageId, replyText) {
       await bot.sendMessage(msg.userId, replyMessage, { parse_mode: 'Markdown' });
       
       await updateMessageStatus(messageId, "replied", replyText, adminChatId);
-      
-      const adminInfo = await db.collection('users').doc(adminChatId).get();
-      const adminName = adminInfo.exists ? adminInfo.data().firstName : 'Admin';
       
       await bot.sendMessage(adminChatId, 
         `✅ **Reply sent successfully!**\n\n` +
@@ -929,11 +932,13 @@ bot.on('callback_query', async (callbackQuery) => {
       return;
     }
     
-    let allMessages = "📩 **All Messages**\n\n";
+    let allMessages = "📩 **All Messages** (newest first)\n\n";
     for (let i = 0; i < Math.min(messages.length, 20); i++) {
       const msg = messages[i];
       const statusIcon = msg.status === "unread" ? "🔴" : msg.status === "replied" ? "✅" : "📖";
+      const date = msg.timestamp?.toDate().toLocaleString() || 'Unknown';
       allMessages += `${statusIcon} **${i + 1}.** ${msg.firstName}: ${msg.message.substring(0, 50)}...\n`;
+      allMessages += `   🕒 ${date}\n`;
       allMessages += `   🆔 \`${msg.id}\`\n\n`;
       
       if (allMessages.length > 3500) {
@@ -1363,7 +1368,7 @@ bot.on('message', async (msg) => {
       return;
     }
     
-    if (text === "📊 Leaderboard") {
+    if (text === "📊 Leaderboard (by recent)") {
       await showAdminLeaderboard(chatId);
       return;
     }
@@ -1446,7 +1451,7 @@ bot.on('message', async (msg) => {
   }
   
   // =====================
-  // PROFESSIONAL USER HANDLERS (LEADERBOARD REMOVED)
+  // PROFESSIONAL USER HANDLERS
   // =====================
   
   const categories = getUniqueCategories();
@@ -1646,7 +1651,6 @@ bot.on('poll_answer', async (answer) => {
       current: user.current
     });
 
-    // Immediately send next question (no delay)
     await sendQuestion(userId);
 
   } catch (err) {
