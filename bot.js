@@ -9,7 +9,7 @@ const token = process.env.TOKEN;
 const ADMIN_IDS = [
   1983262664;
   6243495038;
-  7650796672;
+  7754244812;
 ]
 
 
