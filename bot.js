@@ -627,7 +627,7 @@ async function viewMessage(adminChatId, messageId) {
 }
 
 // =====================
-// REPLY TO USER
+// REPLY TO USER (via message ID)
 // =====================
 async function replyToUser(adminChatId, messageId, replyText) {
   try {
@@ -808,20 +808,32 @@ async function showAdminCategoryList(chatId, action) {
 }
 
 // =====================
-// FUNCTION TO FORWARD ANY USER MESSAGE TO ADMIN
+// FORWARD USER MESSAGE TO ADMIN (WITH INLINE REPLY & DELETE BUTTONS)
 // =====================
 async function forwardUserMessageToAdmin(userId, username, firstName, messageText, messageId) {
   // Save to database
-  await saveUserMessage(userId, username, firstName, messageText, messageId);
+  const docId = await saveUserMessage(userId, username, firstName, messageText, messageId);
+  
+  // Inline keyboard for quick actions
+  const inlineKeyboard = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "💬 Reply", callback_data: `reply_direct_${userId}_${docId}` }],
+        [{ text: "🗑 Delete", callback_data: `delete_direct_${docId}` }]
+      ]
+    }
+  };
   
   // Notify admin
   const adminMessage = `📩 **New Message from User**\n\n` +
     `👤 User: ${firstName} (@${username || 'No username'})\n` +
     `🆔 ID: ${userId}\n` +
-    `📝 Message: ${messageText}\n\n` +
-    `Use /viewmessage to see all messages.`;
+    `📝 Message: ${messageText}`;
   
-  await bot.sendMessage(ADMIN_ID, adminMessage, { parse_mode: 'Markdown' });
+  await bot.sendMessage(ADMIN_ID, adminMessage, { 
+    parse_mode: 'Markdown', 
+    ...inlineKeyboard 
+  });
   
   // Confirm to user
   await bot.sendMessage(userId, 
@@ -947,7 +959,7 @@ bot.onText(/\/categories/, async (msg) => {
 });
 
 // =====================
-// CALLBACK QUERY HANDLER
+// CALLBACK QUERY HANDLER (includes direct reply and delete)
 // =====================
 bot.on('callback_query', async (callbackQuery) => {
   const chatId = callbackQuery.message.chat.id.toString();
@@ -959,6 +971,35 @@ bot.on('callback_query', async (callbackQuery) => {
     return;
   }
   
+  // Direct reply from user message notification
+  if (data.startsWith("reply_direct_")) {
+    const parts = data.split('_');
+    const targetUserId = parts[2];
+    const messageId = parts[3];
+    await bot.answerCallbackQuery(callbackQuery.id);
+    
+    // Store reply info
+    replyState[chatId] = { directUserId: targetUserId, messageId: messageId };
+    await bot.sendMessage(chatId, 
+      `💬 **Reply to user**\n\nSend your reply message below. The user will receive it immediately.\n\nTo cancel, send /cancel_reply`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+  
+  // Direct delete from user message notification
+  if (data.startsWith("delete_direct_")) {
+    const messageId = data.replace("delete_direct_", "");
+    await bot.answerCallbackQuery(callbackQuery.id);
+    await deleteMessage(messageId);
+    await bot.editMessageText("✅ Message deleted", {
+      chat_id: callbackQuery.message.chat.id,
+      message_id: callbackQuery.message.message_id
+    });
+    return;
+  }
+  
+  // Existing callbacks
   if (data === "view_all_messages") {
     await bot.answerCallbackQuery(callbackQuery.id);
     const messages = await getMessages();
@@ -1051,7 +1092,7 @@ bot.on('message', async (msg) => {
   }, { merge: true });
 
   // =====================
-  // HANDLE REPLY STATE FOR ADMIN
+  // HANDLE REPLY STATE FOR ADMIN (direct reply from inline button)
   // =====================
   if (replyState[chatId] && userId === ADMIN_ID) {
     if (text === '/cancel_reply') {
@@ -1059,9 +1100,41 @@ bot.on('message', async (msg) => {
       return bot.sendMessage(chatId, "❌ Reply cancelled.", getAdminKeyboard());
     }
     
-    await replyToUser(chatId, replyState[chatId].messageId, text);
-    delete replyState[chatId];
-    return;
+    // Check if this is a direct reply (has directUserId)
+    if (replyState[chatId].directUserId) {
+      const targetUserId = replyState[chatId].directUserId;
+      const messageId = replyState[chatId].messageId;
+      
+      try {
+        const replyMessage = `📩 **Reply from Admin**\n\n**Admin's response:**\n${text}`;
+        await bot.sendMessage(targetUserId, replyMessage, { parse_mode: 'Markdown' });
+        
+        // Update message status in database
+        if (messageId) {
+          await updateMessageStatus(messageId, "replied", text, adminChatId);
+        }
+        
+        await bot.sendMessage(chatId, 
+          `✅ **Reply sent successfully!**\n\nTo user ID: ${targetUserId}\nReply: ${text}`,
+          getAdminKeyboard()
+        );
+      } catch (err) {
+        console.error("Direct reply error:", err);
+        await bot.sendMessage(chatId, 
+          `❌ Failed to send reply. Error: ${err.message}`,
+          getAdminKeyboard()
+        );
+      }
+      delete replyState[chatId];
+      return;
+    }
+    
+    // Otherwise it's a reply via message ID (existing logic)
+    if (replyState[chatId].messageId) {
+      await replyToUser(chatId, replyState[chatId].messageId, text);
+      delete replyState[chatId];
+      return;
+    }
   }
 
   // =====================
@@ -1439,16 +1512,45 @@ bot.on('message', async (msg) => {
       return;
     }
     
+    // =====================
+    // ADD QUESTION WITH CLICKABLE CATEGORIES
+    // =====================
     if (text === "➕ Add Question") {
-      adminState[chatId] = { step: 0 };
-      return bot.sendMessage(chatId, "📝 Send category name:");
+      const categories = getUniqueCategories();
+      if (categories.length === 0) {
+        // No existing categories – let admin type a new one
+        adminState[chatId] = { step: 0 };
+        return bot.sendMessage(chatId, "📝 No categories found. Please type a new category name:");
+      }
+      adminState[chatId] = { step: 'choose_category' };
+      const keyboard = {
+        reply_markup: {
+          keyboard: [...categories.map(c => [c]), ["🔙 Cancel"]],
+          resize_keyboard: true,
+          one_time_keyboard: true
+        }
+      };
+      return bot.sendMessage(chatId, "Select a category (or type a new one):", keyboard);
     }
     
+    // Handle category selection for adding question
+    if (adminState[chatId]?.step === 'choose_category') {
+      if (text === "🔙 Cancel") {
+        delete adminState[chatId];
+        return bot.sendMessage(chatId, "❌ Cancelled.", getAdminKeyboard());
+      }
+      adminState[chatId].category = text;
+      adminState[chatId].step = 1;
+      return bot.sendMessage(chatId, "📝 Send the question:");
+    }
+    
+    // Existing add question flow (step 0,1,2,3)
     const state = adminState[chatId];
     if (state && state.step !== 'select_question' && state.step !== 'select_question_delete' && 
         state.step !== 'choose_field' && state.step !== 'confirm_delete' &&
         state.step !== 'edit_category' && state.step !== 'edit_question_text' && 
-        state.step !== 'edit_options' && state.step !== 'edit_correct') {
+        state.step !== 'edit_options' && state.step !== 'edit_correct' &&
+        state.step !== 'choose_category') {
       if (state.step === 0) {
         state.category = text;
         state.step = 1;
