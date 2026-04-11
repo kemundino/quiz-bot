@@ -7,10 +7,10 @@ const admin = require('firebase-admin');
 // =====================
 const token = process.env.TOKEN;
 const ADMIN_IDS = [
-  1983262664;
-  6243495038;
-  7754244812;
-]
+  1983262664,
+  6243495038,
+  7754244812,
+];
 
 
 // =====================
