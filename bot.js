@@ -3,21 +3,21 @@ const express = require('express');
 const admin = require('firebase-admin');
 
 // =====================
-// CONFIG
+// CONFIG - MULTIPLE ADMINS
 // =====================
 const token = process.env.TOKEN;
+
+// Add your admin IDs here (as many as you need)
 const ADMIN_IDS = [
-  1983262664,
-  6243495038,
-  7754244812,
+  1983262664,   // your ID
   6412454382
 ];
 
+const adminSet = new Set(ADMIN_IDS);
 
 // =====================
 // EXPRESS SETUP
 // =====================
-
 const app = express();
 app.use(express.json());
 
@@ -39,6 +39,7 @@ admin.initializeApp({
 const db = admin.firestore();
 
 console.log("🔥 Bot + Firestore running...");
+console.log(`👥 Admins: ${ADMIN_IDS.join(', ')}`);
 
 // =====================
 // STATE
@@ -122,43 +123,47 @@ app.get('/', (req, res) => {
 });
 
 // =====================
-// ADMIN KEYBOARDS
+// ADMIN KEYBOARD (3 COLUMNS)
 // =====================
 const getAdminKeyboard = () => ({
   reply_markup: {
     keyboard: [
-      ["➕ Add Question", "✏️ Edit Question"],
-      ["🗑 Delete Question", "📋 List Questions"],
-      ["📢 Broadcast", "👥 Users"],
-      ["🚫 Block User", "✅ Unblock User"],
-      ["📊 Leaderboard", "📈 Stats"],
-      ["📩 View Messages", "🔙 Back"]
+      ["➕ Add Question", "✏️ Edit Question", "🗑 Delete Question"],
+      ["📋 List Questions", "📢 Broadcast", "👥 Users"],
+      ["🚫 Block User", "✅ Unblock User", "📊 Leaderboard"],
+      ["📈 Stats", "📩 View Messages", "🔙 Back"]
     ],
     resize_keyboard: true,
     input_field_placeholder: "Choose an option..."
   }
 });
 
-const getCategoryManagementKeyboard = (categories, action) => ({
-  reply_markup: {
-    keyboard: [
-      ...categories.map(cat => [`📚 ${cat}`]),
-      ["🔙 Back to Admin Menu"]
-    ],
-    resize_keyboard: true,
-    input_field_placeholder: "Select a category..."
+// =====================
+// CATEGORY MANAGEMENT KEYBOARD (3 COLUMNS)
+// =====================
+const getCategoryManagementKeyboard = (categories, action) => {
+  const rows = [];
+  for (let i = 0; i < categories.length; i += 3) {
+    rows.push(categories.slice(i, i + 3).map(cat => `📚 ${cat}`));
   }
-});
+  rows.push(["🔙 Back to Admin Menu"]);
+  return {
+    reply_markup: {
+      keyboard: rows,
+      resize_keyboard: true,
+      input_field_placeholder: "Select a category..."
+    }
+  };
+};
 
 // =====================
-// PROFESSIONAL USER KEYBOARDS
+// PROFESSIONAL USER KEYBOARDS (3 COLUMNS)
 // =====================
 const getMainKeyboard = () => ({
   reply_markup: {
     keyboard: [
-      ["🎯 Start Quiz", "📊 My Stats"],
-      ["ℹ️ About", "🔄 Change Category"],
-      ["📩 Contact"]
+      ["🎯 Start Quiz", "📊 My Stats", "ℹ️ About"],
+      ["🔄 Change Category", "📩 Contact", "🔙 Main Menu"]
     ],
     resize_keyboard: true,
     persistent: true,
@@ -166,21 +171,25 @@ const getMainKeyboard = () => ({
   }
 });
 
-const getCategoryKeyboard = (categories) => ({
-  reply_markup: {
-    keyboard: [
-      ...categories.map(c => [`📚 ${c}`]),
-      ["🔙 Back to Main Menu"]
-    ],
-    resize_keyboard: true,
-    persistent: true,
-    input_field_placeholder: "Select a category..."
+const getCategoryKeyboard = (categories) => {
+  const rows = [];
+  for (let i = 0; i < categories.length; i += 3) {
+    rows.push(categories.slice(i, i + 3).map(c => `📚 ${c}`));
   }
-});
+  rows.push(["🔙 Back to Main Menu"]);
+  return {
+    reply_markup: {
+      keyboard: rows,
+      resize_keyboard: true,
+      persistent: true,
+      input_field_placeholder: "Select a category..."
+    }
+  };
+};
 
 const getQuizKeyboard = () => ({
   reply_markup: {
-    keyboard: [["❌ End Quiz", "📊 Progress"], ["🔙 Main Menu"]],
+    keyboard: [["❌ End Quiz", "📊 Progress", "🔙 Main Menu"]],
     resize_keyboard: true,
     persistent: true,
     input_field_placeholder: "Quiz in progress..."
@@ -818,10 +827,8 @@ async function showAdminCategoryList(chatId, action) {
 // FORWARD USER MESSAGE TO ADMIN (WITH INLINE REPLY & DELETE BUTTONS)
 // =====================
 async function forwardUserMessageToAdmin(userId, username, firstName, messageText, messageId) {
-  // Save to database
   const docId = await saveUserMessage(userId, username, firstName, messageText, messageId);
   
-  // Inline keyboard for quick actions
   const inlineKeyboard = {
     reply_markup: {
       inline_keyboard: [
@@ -831,18 +838,22 @@ async function forwardUserMessageToAdmin(userId, username, firstName, messageTex
     }
   };
   
-  // Notify admin
-  const adminMessage = `📩 **New Message from User**\n\n` +
-    `👤 User: ${firstName} (@${username || 'No username'})\n` +
-    `🆔 ID: ${userId}\n` +
-    `📝 Message: ${messageText}`;
+  // Send to ALL admins
+  for (const adminId of ADMIN_IDS) {
+    try {
+      const adminMessage = `📩 **New Message from User**\n\n` +
+        `👤 User: ${firstName} (@${username || 'No username'})\n` +
+        `🆔 ID: ${userId}\n` +
+        `📝 Message: ${messageText}`;
+      await bot.sendMessage(adminId, adminMessage, { 
+        parse_mode: 'Markdown', 
+        ...inlineKeyboard 
+      });
+    } catch (err) {
+      console.error(`Failed to notify admin ${adminId}:`, err.message);
+    }
+  }
   
-  await bot.sendMessage(ADMIN_ID, adminMessage, { 
-    parse_mode: 'Markdown', 
-    ...inlineKeyboard 
-  });
-  
-  // Confirm to user
   await bot.sendMessage(userId, 
     "✅ **Message Sent!**\n\n" +
     "Your message has been sent to the administrator. You will receive a reply soon.\n\n" +
@@ -858,7 +869,7 @@ bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id.toString();
   const userId = msg.from.id;
 
-  if (blockedUsers.has(chatId) && userId !== ADMIN_ID) {
+  if (blockedUsers.has(chatId) && !adminSet.has(userId)) {
     return bot.sendMessage(chatId, "🚫 You are blocked from using this bot. Contact administrator for assistance.");
   }
 
@@ -884,7 +895,7 @@ bot.onText(/\/start/, async (msg) => {
     `📩 **Need help?** Use the "Contact" button or **just type any message** – I'll forward it to the admin!\n\n` +
     `Choose a category to begin your journey! 🚀`;
 
-  if (userId !== ADMIN_ID) {
+  if (!adminSet.has(userId)) {
     const categories = getUniqueCategories();
     
     if (categories.length === 0) {
@@ -910,7 +921,7 @@ bot.onText(/\/block (.+)/, async (msg, match) => {
   const chatId = msg.chat.id.toString();
   const userId = msg.from.id;
   
-  if (userId !== ADMIN_ID) return;
+  if (!adminSet.has(userId)) return;
   
   const userIdToBlock = match[1];
   await blockUser(chatId, userIdToBlock);
@@ -920,7 +931,7 @@ bot.onText(/\/unblock (.+)/, async (msg, match) => {
   const chatId = msg.chat.id.toString();
   const userId = msg.from.id;
   
-  if (userId !== ADMIN_ID) return;
+  if (!adminSet.has(userId)) return;
   
   const userIdToUnblock = match[1];
   await unblockUser(chatId, userIdToUnblock);
@@ -930,7 +941,7 @@ bot.onText(/\/reply (.+?) (.+)/, async (msg, match) => {
   const chatId = msg.chat.id.toString();
   const userId = msg.from.id;
   
-  if (userId !== ADMIN_ID) return;
+  if (!adminSet.has(userId)) return;
   
   const messageId = match[1];
   const replyText = match[2];
@@ -941,7 +952,7 @@ bot.onText(/\/viewmessage (.+)/, async (msg, match) => {
   const chatId = msg.chat.id.toString();
   const userId = msg.from.id;
   
-  if (userId !== ADMIN_ID) return;
+  if (!adminSet.has(userId)) return;
   
   const messageId = match[1];
   await viewMessage(chatId, messageId);
@@ -951,7 +962,7 @@ bot.onText(/\/deletemessage (.+)/, async (msg, match) => {
   const chatId = msg.chat.id.toString();
   const userId = msg.from.id;
   
-  if (userId !== ADMIN_ID) return;
+  if (!adminSet.has(userId)) return;
   
   const messageId = match[1];
   await deleteMessage(messageId);
@@ -973,7 +984,7 @@ bot.on('callback_query', async (callbackQuery) => {
   const userId = callbackQuery.from.id;
   const data = callbackQuery.data;
   
-  if (userId !== ADMIN_ID) {
+  if (!adminSet.has(userId)) {
     await bot.answerCallbackQuery(callbackQuery.id, { text: "Only admin can use this!" });
     return;
   }
@@ -985,7 +996,6 @@ bot.on('callback_query', async (callbackQuery) => {
     const messageId = parts[3];
     await bot.answerCallbackQuery(callbackQuery.id);
     
-    // Store reply info
     replyState[chatId] = { directUserId: targetUserId, messageId: messageId };
     await bot.sendMessage(chatId, 
       `💬 **Reply to user**\n\nSend your reply message below. The user will receive it immediately.\n\nTo cancel, send /cancel_reply`,
@@ -1061,7 +1071,7 @@ bot.on('callback_query', async (callbackQuery) => {
     replyState[chatId] = { messageId: messageId };
     
     await bot.sendMessage(chatId, 
-      `💬 **Reply **\n\n` +
+      `💬 **Reply**\n\n` +
       `Please send your reply message below. The user will receive it immediately.\n\n` +
       `Message ID: \`${messageId}\`\n\n` +
       `To cancel, send /cancel_reply`,
@@ -1088,7 +1098,7 @@ bot.on('message', async (msg) => {
 
   if (!text) return;
 
-  if (blockedUsers.has(chatId) && userId !== ADMIN_ID) {
+  if (blockedUsers.has(chatId) && !adminSet.has(userId)) {
     return bot.sendMessage(chatId, "🚫 You are blocked from using this bot.");
   }
 
@@ -1101,13 +1111,12 @@ bot.on('message', async (msg) => {
   // =====================
   // HANDLE REPLY STATE FOR ADMIN (direct reply from inline button)
   // =====================
-  if (replyState[chatId] && userId === ADMIN_ID) {
+  if (replyState[chatId] && adminSet.has(userId)) {
     if (text === '/cancel_reply') {
       delete replyState[chatId];
       return bot.sendMessage(chatId, "❌ Reply cancelled.", getAdminKeyboard());
     }
     
-    // Check if this is a direct reply (has directUserId)
     if (replyState[chatId].directUserId) {
       const targetUserId = replyState[chatId].directUserId;
       const messageId = replyState[chatId].messageId;
@@ -1116,9 +1125,8 @@ bot.on('message', async (msg) => {
         const replyMessage = `📩 **Reply from Admin**\n\n**Admin's response:**\n${text}`;
         await bot.sendMessage(targetUserId, replyMessage, { parse_mode: 'Markdown' });
         
-        // Update message status in database
         if (messageId) {
-          await updateMessageStatus(messageId, "replied", text, adminChatId);
+          await updateMessageStatus(messageId, "replied", text, chatId);
         }
         
         await bot.sendMessage(chatId, 
@@ -1136,7 +1144,6 @@ bot.on('message', async (msg) => {
       return;
     }
     
-    // Otherwise it's a reply via message ID (existing logic)
     if (replyState[chatId].messageId) {
       await replyToUser(chatId, replyState[chatId].messageId, text);
       delete replyState[chatId];
@@ -1147,7 +1154,7 @@ bot.on('message', async (msg) => {
   // =====================
   // ADMIN HANDLERS
   // =====================
-  if (userId === ADMIN_ID) {
+  if (adminSet.has(userId)) {
     
     if (text === "🔙 Main Menu" || text === "🔙 Back to Admin Menu" || text === "🔙 Back") {
       delete adminState[chatId];
@@ -1525,14 +1532,18 @@ bot.on('message', async (msg) => {
     if (text === "➕ Add Question") {
       const categories = getUniqueCategories();
       if (categories.length === 0) {
-        // No existing categories – let admin type a new one
         adminState[chatId] = { step: 0 };
         return bot.sendMessage(chatId, "📝 No categories found. Please type a new category name:");
       }
       adminState[chatId] = { step: 'choose_category' };
+      const rows = [];
+      for (let i = 0; i < categories.length; i += 3) {
+        rows.push(categories.slice(i, i + 3));
+      }
+      rows.push(["🔙 Cancel"]);
       const keyboard = {
         reply_markup: {
-          keyboard: [...categories.map(c => [c]), ["🔙 Cancel"]],
+          keyboard: rows,
           resize_keyboard: true,
           one_time_keyboard: true
         }
@@ -1540,7 +1551,6 @@ bot.on('message', async (msg) => {
       return bot.sendMessage(chatId, "Select a category (or type a new one):", keyboard);
     }
     
-    // Handle category selection for adding question
     if (adminState[chatId]?.step === 'choose_category') {
       if (text === "🔙 Cancel") {
         delete adminState[chatId];
@@ -1551,7 +1561,6 @@ bot.on('message', async (msg) => {
       return bot.sendMessage(chatId, "📝 Send the question:");
     }
     
-    // Existing add question flow (step 0,1,2,3)
     const state = adminState[chatId];
     if (state && state.step !== 'select_question' && state.step !== 'select_question_delete' && 
         state.step !== 'choose_field' && state.step !== 'confirm_delete' &&
@@ -1611,7 +1620,6 @@ bot.on('message', async (msg) => {
   const categories = getUniqueCategories();
   const cleanCategory = text.replace(/^📚 /, '');
   
-  // If user is currently in "contactingAdmin" mode (from button), handle that
   if (userSessions[chatId]?.contactingAdmin) {
     if (text === '/cancel') {
       delete userSessions[chatId].contactingAdmin;
@@ -1638,19 +1646,25 @@ bot.on('message', async (msg) => {
       { parse_mode: 'Markdown', ...getMainKeyboard() }
     );
     
-    await bot.sendMessage(ADMIN_ID, 
-      `📩 **New Message from User**\n\n` +
-      `👤 User: ${user.firstName} (@${msg.from.username || 'No username'})\n` +
-      `🆔 ID: ${chatId}\n` +
-      `📝 Message: ${text}\n\n` +
-      `Use /viewmessage to see all messages.`,
-      { parse_mode: 'Markdown' }
-    );
+    // Notify ALL admins
+    for (const adminId of ADMIN_IDS) {
+      try {
+        await bot.sendMessage(adminId, 
+          `📩 **New Message from User**\n\n` +
+          `👤 User: ${user.firstName} (@${msg.from.username || 'No username'})\n` +
+          `🆔 ID: ${chatId}\n` +
+          `📝 Message: ${text}\n\n` +
+          `Use /viewmessage to see all messages.`,
+          { parse_mode: 'Markdown' }
+        );
+      } catch (err) {
+        console.error(`Failed to notify admin ${adminId}:`, err.message);
+      }
+    }
     
     return;
   }
   
-  // If user pressed the "Contact" button, start the contactingAdmin mode
   if (text === "📩 Contact") {
     userSessions[chatId] = { ...userSessions[chatId], contactingAdmin: true };
     return bot.sendMessage(chatId, 
@@ -1662,7 +1676,6 @@ bot.on('message', async (msg) => {
     );
   }
   
-  // Handle back to main menu
   if (text === "🔙 Back to Main Menu") {
     delete userSessions[chatId];
     await db.collection('users').doc(chatId).update({
@@ -1671,7 +1684,6 @@ bot.on('message', async (msg) => {
     return bot.sendMessage(chatId, "🏠 **Main Menu**\n\nWhat would you like to do?", getMainKeyboard());
   }
   
-  // Handle category selection
   if (categories.includes(cleanCategory)) {
     await db.collection('users').doc(chatId).update({
       category: cleanCategory
@@ -1692,7 +1704,6 @@ bot.on('message', async (msg) => {
     });
   }
   
-  // Handle change category
   if (text === "🔄 Change Category") {
     if (userSessions[chatId]?.quizActive) {
       await bot.sendMessage(chatId, "⚠️ Please end your current quiz before changing category.\nTap 'End Quiz' to stop.",
@@ -1703,7 +1714,6 @@ bot.on('message', async (msg) => {
     return;
   }
   
-  // Handle main menu actions
   switch(text) {
     case "🎯 Start Quiz":
       const userDoc = await db.collection('users').doc(chatId).get();
@@ -1755,16 +1765,13 @@ bot.on('message', async (msg) => {
       break;
       
     default:
-      // Any other text message: forward to admin (if user has a category and is not in quiz)
       const currentUser = await db.collection('users').doc(chatId).get();
       if (currentUser.exists && currentUser.data().quizActive) {
-        // Ignore messages during quiz (they might interfere with poll answers)
         return;
       }
       
       const userDataDefault = currentUser.data();
       if (!userDataDefault || !userDataDefault.category) {
-        // User hasn't selected category, show category selection again
         const categoriesList = getUniqueCategories();
         if (categoriesList.length > 0) {
           await bot.sendMessage(chatId, "⚠️ Please select a category first by tapping one of the buttons below:", 
@@ -1773,7 +1780,6 @@ bot.on('message', async (msg) => {
           await bot.sendMessage(chatId, "⚠️ No categories available. Please try again later.", getMainKeyboard());
         }
       } else {
-        // User has a category – treat this as a message to admin
         await forwardUserMessageToAdmin(
           chatId,
           msg.from.username,
