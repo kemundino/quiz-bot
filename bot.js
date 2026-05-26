@@ -128,88 +128,55 @@ app.get('/', (req, res) => {
 });
 
 // =====================
-// ADMIN KEYBOARD (3 COLUMNS) – with extra button for superadmin
+// SAVE IMAGE/FILE TO FIREBASE
 // =====================
-const getAdminKeyboard = (userId) => {
-  const baseButtons = [
-    ["➕ Add Question", "✏️ Edit Question", "🗑 Delete Question"],
-    ["📋 List Questions", "📢 Broadcast", "👥 Users"],
-    ["🚫 Block User", "✅ Unblock User", "📊 Leaderboard"],
-    ["📈 Stats", "📩 View Messages", "🔙 Back"]
-  ];
-  
-  // Only superadmin sees the "🗑 Delete Category" button
-  if (isSuperAdmin(userId)) {
-    // Insert the button in the first row (or wherever you like)
-    baseButtons[0] = ["➕ Add Question", "✏️ Edit Question", "🗑 Delete Question", "🗑 Delete Category"];
-  }
-  
-  return {
-    reply_markup: {
-      keyboard: baseButtons,
-      resize_keyboard: true,
-      input_field_placeholder: "Choose an option..."
-    }
-  };
-};
+async function saveUserFile(userId, username, firstName, fileId, fileType, caption, messageId) {
+  const fileRef = db.collection('user_files').doc();
+  await fileRef.set({
+    id: fileRef.id,
+    userId: userId,
+    username: username || "Unknown",
+    firstName: firstName || "Anonymous",
+    fileId: fileId,
+    fileType: fileType,
+    caption: caption || "",
+    messageId: messageId,
+    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    status: "unread",
+    repliedByAdmin: null,
+    adminReply: null,
+    repliedAt: null
+  });
+  return fileRef.id;
+}
 
-// =====================
-// CATEGORY MANAGEMENT KEYBOARD (3 COLUMNS)
-// =====================
-const getCategoryManagementKeyboard = (categories, action) => {
-  const rows = [];
-  for (let i = 0; i < categories.length; i += 3) {
-    rows.push(categories.slice(i, i + 3).map(cat => `📚 ${cat}`));
+async function getUserFiles(userId = null, status = null) {
+  let query = db.collection('user_files').orderBy('timestamp', 'desc');
+  if (userId) {
+    query = query.where('userId', '==', userId);
   }
-  rows.push(["🔙 Back to Admin Menu"]);
-  return {
-    reply_markup: {
-      keyboard: rows,
-      resize_keyboard: true,
-      input_field_placeholder: "Select a category..."
-    }
-  };
-};
+  if (status) {
+    query = query.where('status', '==', status);
+  }
+  const snapshot = await query.get();
+  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+}
 
-// =====================
-// PROFESSIONAL USER KEYBOARDS (3 COLUMNS)
-// =====================
-const getMainKeyboard = () => ({
-  reply_markup: {
-    keyboard: [
-      ["🎯 Start Quiz", "📊 My Stats", "ℹ️ About"],
-      ["🔄 Change Category", "📩 Contact", "🔙 Main Menu"]
-    ],
-    resize_keyboard: true,
-    persistent: true,
-    input_field_placeholder: "Choose an option..."
+async function updateFileStatus(fileId, status, reply = null, adminId = null) {
+  const updateData = { status: status };
+  if (reply) {
+    updateData.adminReply = reply;
+    updateData.repliedAt = admin.firestore.FieldValue.serverTimestamp();
+    updateData.repliedByAdmin = adminId;
   }
-});
+  await db.collection('user_files').doc(fileId).update(updateData);
+}
 
-const getCategoryKeyboard = (categories) => {
-  const rows = [];
-  for (let i = 0; i < categories.length; i += 3) {
-    rows.push(categories.slice(i, i + 3).map(c => `📚 ${c}`));
-  }
-  rows.push(["🔙 Back to Main Menu"]);
-  return {
-    reply_markup: {
-      keyboard: rows,
-      resize_keyboard: true,
-      persistent: true,
-      input_field_placeholder: "Select a category..."
-    }
-  };
-};
-
-const getQuizKeyboard = () => ({
-  reply_markup: {
-    keyboard: [["❌ End Quiz", "📊 Progress", "🔙 Main Menu"]],
-    resize_keyboard: true,
-    persistent: true,
-    input_field_placeholder: "Quiz in progress..."
-  }
-});
+async function getFile(fileId) {
+  const fileDoc = await db.collection('user_files').doc(fileId).get();
+  if (!fileDoc.exists) return null;
+  return { id: fileDoc.id, ...fileDoc.data() };
+}
 
 // =====================
 // CONTACT MESSAGE FUNCTIONS
@@ -516,6 +483,7 @@ async function showAbout(chatId) {
     `• No time limit – answer at your own pace\n` +
     `• Track your best scores\n` +
     `• Real-time feedback\n` +
+    `• Send images and files to admin\n` +
     `• Contact for support\n\n` +
     `📊 **How to Use:**\n` +
     `1. Select a category\n` +
@@ -524,7 +492,7 @@ async function showAbout(chatId) {
     `4. Try to beat your best score!\n\n` +
     `🏅 **Ranks:**\n` +
     `• Use My stats to see your progress\n` +
-    `📩 **Need help?** Use "Contact" button or just type any message!`;
+    `📩 **Need help?** Use "Contact" button, send an image/file, or just type any message!`;
   
   await bot.sendMessage(chatId, aboutMessage, {
     parse_mode: 'Markdown',
@@ -569,38 +537,45 @@ async function showAllUsers(chatId) {
 // =====================
 async function showAdminMessages(chatId) {
   const messages = await getMessages();
+  const files = await getUserFiles();
+  const allItems = [...messages.map(m => ({ ...m, type: 'message' })), ...files.map(f => ({ ...f, type: 'file' }))];
+  allItems.sort((a, b) => b.timestamp?.toDate() - a.timestamp?.toDate());
   
-  if (messages.length === 0) {
-    return bot.sendMessage(chatId, "📭 No messages from users yet.", getAdminKeyboard(chatId));
+  const totalUnread = messages.filter(m => m.status === "unread").length + files.filter(f => f.status === "unread").length;
+  
+  if (allItems.length === 0) {
+    return bot.sendMessage(chatId, "📭 No messages or files from users yet.", getAdminKeyboard(chatId));
   }
   
-  const unreadCount = messages.filter(m => m.status === "unread").length;
+  let messageText = `📩 **User Communications** (newest first)\n\n`;
+  messageText += `📊 Total: ${allItems.length} | 🔴 Unread: ${totalUnread}\n\n`;
   
-  let messageText = `📩 **User Messages** (newest first)\n\n`;
-  messageText += `📊 Total: ${messages.length} | 🔴 Unread: ${unreadCount}\n\n`;
-  
-  for (let i = 0; i < Math.min(messages.length, 10); i++) {
-    const msg = messages[i];
-    const statusIcon = msg.status === "unread" ? "🔴" : msg.status === "replied" ? "✅" : "📖";
-    const date = msg.timestamp?.toDate().toLocaleString() || 'Unknown';
-    const preview = msg.message.substring(0, 40);
-    const senderName = msg.firstName || 'Anonymous';
+  for (let i = 0; i < Math.min(allItems.length, 10); i++) {
+    const item = allItems[i];
+    const statusIcon = item.status === "unread" ? "🔴" : item.status === "replied" ? "✅" : "📖";
+    const typeIcon = item.type === 'message' ? '💬' : (item.fileType === 'photo' ? '🖼️' : '📎');
+    const date = item.timestamp?.toDate().toLocaleString() || 'Unknown';
+    const preview = item.type === 'message' 
+      ? item.message.substring(0, 40) 
+      : `${item.fileType} ${item.caption ? `- ${item.caption.substring(0, 30)}` : ''}`;
+    const senderName = item.firstName || 'Anonymous';
     
-    messageText += `${statusIcon} **${i + 1}.** From: ${senderName}\n`;
+    messageText += `${statusIcon} ${typeIcon} **${i + 1}.** From: ${senderName}\n`;
     messageText += `   📝 ${preview}...\n`;
     messageText += `   🕒 ${date}\n`;
-    messageText += `   🆔 \`${msg.id}\`\n\n`;
+    messageText += `   🆔 \`${item.id}\`\n\n`;
   }
   
-  if (messages.length > 10) {
-    messageText += `\n📌 Showing 10 of ${messages.length} messages\n`;
+  if (allItems.length > 10) {
+    messageText += `\n📌 Showing 10 of ${allItems.length} items\n`;
   }
   
   const inlineKeyboard = {
     reply_markup: {
       inline_keyboard: [
         [{ text: "📋 View All Messages", callback_data: "view_all_messages" }],
-        [{ text: "💬 Reply to Last Message", callback_data: `reply_${messages[0].id}` }],
+        [{ text: "🖼️ View All Files", callback_data: "view_all_files" }],
+        [{ text: "💬 Reply to Last", callback_data: `reply_${allItems[0].id}_${allItems[0].type}` }],
         [{ text: "🔙 Back to Admin Menu", callback_data: "back_to_admin" }]
       ]
     }
@@ -610,6 +585,144 @@ async function showAdminMessages(chatId) {
     parse_mode: 'Markdown',
     ...inlineKeyboard
   });
+}
+
+// =====================
+// VIEW ALL FILES FOR ADMIN
+// =====================
+async function showAllFiles(adminChatId) {
+  const files = await getUserFiles();
+  
+  if (files.length === 0) {
+    return bot.sendMessage(adminChatId, "📭 No files from users yet.", getAdminKeyboard(adminChatId));
+  }
+  
+  const unreadCount = files.filter(f => f.status === "unread").length;
+  
+  let messageText = `🖼️ **User Files** (newest first)\n\n`;
+  messageText += `📊 Total: ${files.length} | 🔴 Unread: ${unreadCount}\n\n`;
+  
+  for (let i = 0; i < Math.min(files.length, 10); i++) {
+    const file = files[i];
+    const statusIcon = file.status === "unread" ? "🔴" : file.status === "replied" ? "✅" : "📖";
+    const typeIcon = file.fileType === 'photo' ? '🖼️' : '📎';
+    const date = file.timestamp?.toDate().toLocaleString() || 'Unknown';
+    const senderName = file.firstName || 'Anonymous';
+    
+    messageText += `${statusIcon} ${typeIcon} **${i + 1}.** From: ${senderName}\n`;
+    messageText += `   📝 ${file.caption || 'No caption'}\n`;
+    messageText += `   🕒 ${date}\n`;
+    messageText += `   🆔 \`${file.id}\`\n\n`;
+  }
+  
+  if (files.length > 10) {
+    messageText += `\n📌 Showing 10 of ${files.length} files\n`;
+  }
+  
+  const inlineKeyboard = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "🖼️ View All Files", callback_data: "view_all_files_detailed" }],
+        [{ text: "🔙 Back", callback_data: "back_to_messages" }]
+      ]
+    }
+  };
+  
+  await bot.sendMessage(adminChatId, messageText, { 
+    parse_mode: 'Markdown',
+    ...inlineKeyboard
+  });
+}
+
+// =====================
+// VIEW SINGLE FILE
+// =====================
+async function viewFile(adminChatId, fileId) {
+  const file = await getFile(fileId);
+  
+  if (!file) {
+    return bot.sendMessage(adminChatId, "❌ File not found.", getAdminKeyboard(adminChatId));
+  }
+  
+  if (file.status === "unread") {
+    await updateFileStatus(fileId, "read");
+  }
+  
+  let messageText = `📨 **File Details**\n\n` +
+    `👤 **From:** ${file.firstName || 'Anonymous'}\n` +
+    `🆔 **User ID:** \`${file.userId}\`\n` +
+    `📅 **Time:** ${file.timestamp?.toDate().toLocaleString() || 'Unknown'}\n` +
+    `📎 **Type:** ${file.fileType}\n` +
+    `📝 **Caption:** ${file.caption || 'No caption'}\n\n` +
+    `💬 **Reply Status:** ${file.adminReply ? '✅ Replied' : '❌ Not replied yet'}\n\n`;
+  
+  const replyKeyboard = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "💬 Reply to User", callback_data: `reply_file_${fileId}` }],
+        [{ text: "📩 View All Messages", callback_data: "view_all_messages" }],
+        [{ text: "🔙 Back", callback_data: "back_to_messages" }]
+      ]
+    }
+  };
+  
+  await bot.sendMessage(adminChatId, messageText, { parse_mode: 'Markdown' });
+  
+  // Send the actual file
+  try {
+    if (file.fileType === 'photo') {
+      await bot.sendPhoto(adminChatId, file.fileId, { caption: file.caption });
+    } else if (file.fileType === 'video') {
+      await bot.sendVideo(adminChatId, file.fileId, { caption: file.caption });
+    } else if (file.fileType === 'document') {
+      await bot.sendDocument(adminChatId, file.fileId, { caption: file.caption });
+    }
+  } catch (err) {
+    console.error("Error sending file to admin:", err);
+    await bot.sendMessage(adminChatId, "⚠️ Could not display the file. It may have been deleted.");
+  }
+  
+  await bot.sendMessage(adminChatId, "Use the buttons below to reply:", replyKeyboard);
+}
+
+// =====================
+// VIEW ALL FILES DETAILED
+// =====================
+async function viewAllFilesDetailed(adminChatId) {
+  const files = await getUserFiles();
+  
+  if (files.length === 0) {
+    return bot.sendMessage(adminChatId, "📭 No files found.");
+  }
+  
+  for (let i = 0; i < Math.min(files.length, 5); i++) {
+    const file = files[i];
+    const messageText = `**File ${i+1} of ${Math.min(files.length, 5)}**\n` +
+      `👤 From: ${file.firstName}\n` +
+      `🆔 ID: \`${file.id}\`\n` +
+      `📝 Caption: ${file.caption || 'No caption'}`;
+    
+    await bot.sendMessage(adminChatId, messageText, { parse_mode: 'Markdown' });
+    
+    try {
+      if (file.fileType === 'photo') {
+        await bot.sendPhoto(adminChatId, file.fileId, { caption: file.caption });
+      } else if (file.fileType === 'video') {
+        await bot.sendVideo(adminChatId, file.fileId, { caption: file.caption });
+      } else if (file.fileType === 'document') {
+        await bot.sendDocument(adminChatId, file.fileId, { caption: file.caption });
+      }
+    } catch (err) {
+      console.error("Error sending file:", err);
+      await bot.sendMessage(adminChatId, "⚠️ Could not display this file.");
+    }
+  }
+  
+  if (files.length > 5) {
+    await bot.sendMessage(adminChatId, `📌 Showing 5 of ${files.length} files. Use /viewfile <id> to view specific files.`);
+  }
+  
+  await bot.sendMessage(adminChatId, "Admin Panel:", getAdminKeyboard(adminChatId));
 }
 
 // =====================
@@ -636,7 +749,7 @@ async function viewMessage(adminChatId, messageId) {
   const replyKeyboard = {
     reply_markup: {
       inline_keyboard: [
-        [{ text: "💬 Reply to This Message", callback_data: `reply_${messageId}` }],
+        [{ text: "💬 Reply to This Message", callback_data: `reply_${messageId}_message` }],
         [{ text: "🗑 Delete", callback_data: `delete_${messageId}` }],
         [{ text: "📩 View All Messages", callback_data: "view_all_messages" }],
         [{ text: "🔙 Back", callback_data: "back_to_messages" }]
@@ -653,27 +766,42 @@ async function viewMessage(adminChatId, messageId) {
 // =====================
 // REPLY TO USER (via message ID)
 // =====================
-async function replyToUser(adminChatId, messageId, replyText) {
+async function replyToUser(adminChatId, messageId, replyText, type = 'message') {
   try {
-    const msg = await getMessage(messageId);
+    let userMessage;
+    if (type === 'file') {
+      userMessage = await getFile(messageId);
+    } else {
+      userMessage = await getMessage(messageId);
+    }
     
-    if (!msg) {
+    if (!userMessage) {
       return bot.sendMessage(adminChatId, "❌ Message not found.", getAdminKeyboard(adminChatId));
     }
     
     try {
-      const replyMessage = `📩 **Reply from Admin**\n\n` +
-        `**Your message:** ${msg.message}\n\n` +
-        `**Admin's response:**\n${replyText}\n\n` +
-        `💡 You can reply to this message by using the "Contact" button or just typing any message.`;
+      let replyMessage = `📩 **Reply from Admin**\n\n`;
       
-      await bot.sendMessage(msg.userId, replyMessage, { parse_mode: 'Markdown' });
+      if (type === 'file' && userMessage.fileType) {
+        replyMessage += `**Your ${userMessage.fileType}:** ${userMessage.caption || 'No caption'}\n\n`;
+      } else {
+        replyMessage += `**Your message:** ${userMessage.message}\n\n`;
+      }
       
-      await updateMessageStatus(messageId, "replied", replyText, adminChatId);
+      replyMessage += `**Admin's response:**\n${replyText}\n\n` +
+        `💡 You can reply to this message by using the "Contact" button, sending an image, or just typing any message.`;
+      
+      await bot.sendMessage(userMessage.userId, replyMessage, { parse_mode: 'Markdown' });
+      
+      if (type === 'file') {
+        await updateFileStatus(messageId, "replied", replyText, adminChatId);
+      } else {
+        await updateMessageStatus(messageId, "replied", replyText, adminChatId);
+      }
       
       await bot.sendMessage(adminChatId, 
         `✅ **Reply sent successfully!**\n\n` +
-        `📨 To: ${msg.firstName}\n` +
+        `📨 To: ${userMessage.firstName}\n` +
         `💬 Reply: ${replyText}\n\n` +
         `The user will receive this message immediately.`,
         { parse_mode: 'Markdown', ...getAdminKeyboard(adminChatId) }
@@ -840,7 +968,7 @@ async function forwardUserMessageToAdmin(userId, username, firstName, messageTex
   const inlineKeyboard = {
     reply_markup: {
       inline_keyboard: [
-        [{ text: "💬 Reply", callback_data: `reply_direct_${userId}_${docId}` }],
+        [{ text: "💬 Reply", callback_data: `reply_direct_${userId}_${docId}_message` }],
         [{ text: "🗑 Delete", callback_data: `delete_direct_${docId}` }]
       ]
     }
@@ -869,6 +997,143 @@ async function forwardUserMessageToAdmin(userId, username, firstName, messageTex
     { parse_mode: 'Markdown', ...getMainKeyboard() }
   );
 }
+
+// =====================
+// FORWARD USER FILE TO ADMIN
+// =====================
+async function forwardUserFileToAdmin(userId, username, firstName, fileId, fileType, caption, messageId) {
+  const docId = await saveUserFile(userId, username, firstName, fileId, fileType, caption, messageId);
+  
+  const inlineKeyboard = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "💬 Reply", callback_data: `reply_direct_${userId}_${docId}_file` }],
+        [{ text: "📥 View", callback_data: `view_file_${docId}` }]
+      ]
+    }
+  };
+  
+  // Send to ALL admins
+  for (const adminId of Object.keys(ADMIN_ROLES).map(Number)) {
+    try {
+      const adminMessage = `📩 **New ${fileType === 'photo' ? '📷 Photo' : '📎 File'} from User**\n\n` +
+        `👤 User: ${firstName} (@${username || 'No username'})\n` +
+        `🆔 ID: ${userId}\n` +
+        `📝 Caption: ${caption || 'No caption'}`;
+      
+      await bot.sendMessage(adminId, adminMessage, { 
+        parse_mode: 'Markdown', 
+        ...inlineKeyboard 
+      });
+      
+      // Send the actual file to admin
+      if (fileType === 'photo') {
+        await bot.sendPhoto(adminId, fileId, { caption: caption });
+      } else if (fileType === 'video') {
+        await bot.sendVideo(adminId, fileId, { caption: caption });
+      } else if (fileType === 'document') {
+        await bot.sendDocument(adminId, fileId, { caption: caption });
+      }
+      
+    } catch (err) {
+      console.error(`Failed to notify admin ${adminId}:`, err.message);
+    }
+  }
+  
+  let successMessage = "✅ **File Sent!**\n\n";
+  if (fileType === 'photo') {
+    successMessage += "Your photo has been sent to the administrator. ";
+  } else {
+    successMessage += "Your file has been sent to the administrator. ";
+  }
+  successMessage += "You will receive a reply soon.\n\nThank you for reaching out! 🙏";
+  
+  await bot.sendMessage(userId, successMessage, { parse_mode: 'Markdown', ...getMainKeyboard() });
+}
+
+// =====================
+// ADMIN KEYBOARD (3 COLUMNS) – with extra button for superadmin
+// =====================
+const getAdminKeyboard = (userId) => {
+  const baseButtons = [
+    ["➕ Add Question", "✏️ Edit Question", "🗑 Delete Question"],
+    ["📋 List Questions", "📢 Broadcast", "👥 Users"],
+    ["🚫 Block User", "✅ Unblock User", "📊 Leaderboard"],
+    ["📈 Stats", "📩 View Messages", "🔙 Back"]
+  ];
+  
+  // Only superadmin sees the "🗑 Delete Category" button
+  if (isSuperAdmin(userId)) {
+    // Insert the button in the first row (or wherever you like)
+    baseButtons[0] = ["➕ Add Question", "✏️ Edit Question", "🗑 Delete Question", "🗑 Delete Category"];
+  }
+  
+  return {
+    reply_markup: {
+      keyboard: baseButtons,
+      resize_keyboard: true,
+      input_field_placeholder: "Choose an option..."
+    }
+  };
+};
+
+// =====================
+// CATEGORY MANAGEMENT KEYBOARD (3 COLUMNS)
+// =====================
+const getCategoryManagementKeyboard = (categories, action) => {
+  const rows = [];
+  for (let i = 0; i < categories.length; i += 3) {
+    rows.push(categories.slice(i, i + 3).map(cat => `📚 ${cat}`));
+  }
+  rows.push(["🔙 Back to Admin Menu"]);
+  return {
+    reply_markup: {
+      keyboard: rows,
+      resize_keyboard: true,
+      input_field_placeholder: "Select a category..."
+    }
+  };
+};
+
+// =====================
+// PROFESSIONAL USER KEYBOARDS (3 COLUMNS)
+// =====================
+const getMainKeyboard = () => ({
+  reply_markup: {
+    keyboard: [
+      ["🎯 Start Quiz", "📊 My Stats", "ℹ️ About"],
+      ["🔄 Change Category", "📩 Contact", "🔙 Main Menu"]
+    ],
+    resize_keyboard: true,
+    persistent: true,
+    input_field_placeholder: "Choose an option..."
+  }
+});
+
+const getCategoryKeyboard = (categories) => {
+  const rows = [];
+  for (let i = 0; i < categories.length; i += 3) {
+    rows.push(categories.slice(i, i + 3).map(c => `📚 ${c}`));
+  }
+  rows.push(["🔙 Back to Main Menu"]);
+  return {
+    reply_markup: {
+      keyboard: rows,
+      resize_keyboard: true,
+      persistent: true,
+      input_field_placeholder: "Select a category..."
+    }
+  };
+};
+
+const getQuizKeyboard = () => ({
+  reply_markup: {
+    keyboard: [["❌ End Quiz", "📊 Progress", "🔙 Main Menu"]],
+    resize_keyboard: true,
+    persistent: true,
+    input_field_placeholder: "Quiz in progress..."
+  }
+});
 
 // =====================
 // START COMMAND
@@ -900,7 +1165,7 @@ bot.onText(/\/start/, async (msg) => {
     `• Select a category to start\n` +
     `• Answer questions – next question appears immediately\n` +
     `• Earn points and track your best scores!\n\n` +
-    `📩 **Need help?** Use the "Contact" button or **just type any message** – I'll forward it to the admin!\n\n` +
+    `📩 **Need help?** Use the "Contact" button, send an image/file, or **just type any message** – I'll forward it to the admin!\n\n` +
     `Choose a category to begin your journey! 🚀`;
 
   if (!adminSet.has(userId)) {
@@ -953,7 +1218,7 @@ bot.onText(/\/reply (.+?) (.+)/, async (msg, match) => {
   
   const messageId = match[1];
   const replyText = match[2];
-  await replyToUser(chatId, messageId, replyText);
+  await replyToUser(chatId, messageId, replyText, 'message');
 });
 
 bot.onText(/\/viewmessage (.+)/, async (msg, match) => {
@@ -964,6 +1229,16 @@ bot.onText(/\/viewmessage (.+)/, async (msg, match) => {
   
   const messageId = match[1];
   await viewMessage(chatId, messageId);
+});
+
+bot.onText(/\/viewfile (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id.toString();
+  const userId = msg.from.id;
+  
+  if (!adminSet.has(userId)) return;
+  
+  const fileId = match[1];
+  await viewFile(chatId, fileId);
 });
 
 bot.onText(/\/deletemessage (.+)/, async (msg, match) => {
@@ -1001,14 +1276,27 @@ bot.on('callback_query', async (callbackQuery) => {
   if (data.startsWith("reply_direct_")) {
     const parts = data.split('_');
     const targetUserId = parts[2];
-    const messageId = parts[3];
+    const itemId = parts[3];
+    const itemType = parts[4]; // 'message' or 'file'
     await bot.answerCallbackQuery(callbackQuery.id);
     
-    replyState[chatId] = { directUserId: targetUserId, messageId: messageId };
+    replyState[chatId] = { 
+      directUserId: targetUserId, 
+      itemId: itemId,
+      itemType: itemType
+    };
     await bot.sendMessage(chatId, 
       `💬 **Reply to user**\n\nSend your reply message below. The user will receive it immediately.\n\nTo cancel, send /cancel_reply`,
       { parse_mode: 'Markdown' }
     );
+    return;
+  }
+  
+  // View file from notification
+  if (data.startsWith("view_file_")) {
+    const fileId = data.replace("view_file_", "");
+    await bot.answerCallbackQuery(callbackQuery.id);
+    await viewFile(chatId, fileId);
     return;
   }
   
@@ -1024,35 +1312,76 @@ bot.on('callback_query', async (callbackQuery) => {
     return;
   }
   
+  // Reply to file
+  if (data.startsWith("reply_file_")) {
+    const fileId = data.replace("reply_file_", "");
+    await bot.answerCallbackQuery(callbackQuery.id);
+    
+    replyState[chatId] = { fileId: fileId, itemType: 'file' };
+    
+    await bot.sendMessage(chatId, 
+      `💬 **Reply to User**\n\n` +
+      `Please send your reply message below. The user will receive it immediately.\n\n` +
+      `File ID: \`${fileId}\`\n\n` +
+      `To cancel, send /cancel_reply`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+  
   // Existing callbacks
   if (data === "view_all_messages") {
     await bot.answerCallbackQuery(callbackQuery.id);
     const messages = await getMessages();
+    const files = await getUserFiles();
+    const allItems = [...messages.map(m => ({ ...m, type: 'message' })), ...files.map(f => ({ ...f, type: 'file' }))];
+    allItems.sort((a, b) => b.timestamp?.toDate() - a.timestamp?.toDate());
     
-    if (messages.length === 0) {
-      await bot.sendMessage(chatId, "📭 No messages found.");
+    if (allItems.length === 0) {
+      await bot.sendMessage(chatId, "📭 No communications found.");
       return;
     }
     
-    let allMessages = "📩 **All Messages** (newest first)\n\n";
-    for (let i = 0; i < Math.min(messages.length, 20); i++) {
-      const msg = messages[i];
-      const statusIcon = msg.status === "unread" ? "🔴" : msg.status === "replied" ? "✅" : "📖";
-      const date = msg.timestamp?.toDate().toLocaleString() || 'Unknown';
-      const senderName = msg.firstName || 'Anonymous';
+    let allMessages = "📩 **All Communications** (newest first)\n\n";
+    for (let i = 0; i < Math.min(allItems.length, 20); i++) {
+      const item = allItems[i];
+      const statusIcon = item.status === "unread" ? "🔴" : item.status === "replied" ? "✅" : "📖";
+      const typeIcon = item.type === 'message' ? '💬' : (item.fileType === 'photo' ? '🖼️' : '📎');
+      const date = item.timestamp?.toDate().toLocaleString() || 'Unknown';
+      const senderName = item.firstName || 'Anonymous';
+      const preview = item.type === 'message' 
+        ? item.message.substring(0, 50) 
+        : `${item.fileType} ${item.caption ? `- ${item.caption.substring(0, 30)}` : ''}`;
       
-      allMessages += `${statusIcon} **${i + 1}.** ${senderName}: ${msg.message.substring(0, 50)}...\n`;
+      allMessages += `${statusIcon} ${typeIcon} **${i + 1}.** ${senderName}: ${preview}...\n`;
       allMessages += `   🕒 ${date}\n`;
-      allMessages += `   🆔 \`${msg.id}\`\n\n`;
+      allMessages += `   🆔 \`${item.id}\` (${item.type})\n\n`;
       
       if (allMessages.length > 3500) {
-        allMessages += `\n📌 And ${messages.length - i - 1} more messages...`;
+        allMessages += `\n📌 And ${allItems.length - i - 1} more items...`;
         break;
       }
     }
     
     await bot.sendMessage(chatId, allMessages, { parse_mode: 'Markdown' });
-    await bot.sendMessage(chatId, "Use /viewmessage <id> to view full message\nUse /reply <id> <reply> to respond", getAdminKeyboard(chatId));
+    await bot.sendMessage(chatId, 
+      "Commands:\n" +
+      "/viewmessage <id> - View text message\n" +
+      "/viewfile <id> - View file\n" +
+      "/reply <id> <reply> - Reply to message", 
+      getAdminKeyboard(chatId));
+  }
+  
+  if (data === "view_all_files") {
+    await bot.answerCallbackQuery(callbackQuery.id);
+    await showAllFiles(chatId);
+    return;
+  }
+  
+  if (data === "view_all_files_detailed") {
+    await bot.answerCallbackQuery(callbackQuery.id);
+    await viewAllFilesDetailed(chatId);
+    return;
   }
   
   if (data === "back_to_admin") {
@@ -1065,16 +1394,22 @@ bot.on('callback_query', async (callbackQuery) => {
     await showAdminMessages(chatId);
   }
   
-  if (data.startsWith("reply_")) {
-    const messageId = data.replace("reply_", "");
+  if (data.startsWith("reply_") && !data.includes("direct") && !data.includes("file")) {
+    const parts = data.split('_');
+    const itemId = parts[1];
+    const itemType = parts[2] || 'message';
     await bot.answerCallbackQuery(callbackQuery.id);
     
-    replyState[chatId] = { messageId: messageId };
+    if (itemType === 'file') {
+      replyState[chatId] = { fileId: itemId, itemType: 'file' };
+    } else {
+      replyState[chatId] = { messageId: itemId, itemType: 'message' };
+    }
     
     await bot.sendMessage(chatId, 
       `💬 **Reply**\n\n` +
       `Please send your reply message below. The user will receive it immediately.\n\n` +
-      `Message ID: \`${messageId}\`\n\n` +
+      `${itemType === 'file' ? 'File' : 'Message'} ID: \`${itemId}\`\n\n` +
       `To cancel, send /cancel_reply`,
       { parse_mode: 'Markdown' }
     );
@@ -1097,7 +1432,7 @@ bot.on('message', async (msg) => {
   const userId = msg.from.id;
   const text = msg.text;
 
-  if (!text) return;
+  if (!text && !msg.photo && !msg.video && !msg.document) return;
 
   if (blockedUsers.has(chatId) && !adminSet.has(userId)) {
     return bot.sendMessage(chatId, "🚫 You are blocked from using this bot.");
@@ -1110,6 +1445,41 @@ bot.on('message', async (msg) => {
   }, { merge: true });
 
   // =====================
+  // HANDLE PHOTO/VIDEO/DOCUMENT FROM USERS
+  // =====================
+  if ((msg.photo || msg.video || msg.document) && !adminSet.has(userId)) {
+    const userData = await db.collection('users').doc(chatId).get();
+    const user = userData.data();
+    
+    let fileId, fileType, caption;
+    
+    if (msg.photo) {
+      fileId = msg.photo[msg.photo.length - 1].file_id;
+      fileType = 'photo';
+      caption = msg.caption || "";
+    } else if (msg.video) {
+      fileId = msg.video.file_id;
+      fileType = 'video';
+      caption = msg.caption || "";
+    } else if (msg.document) {
+      fileId = msg.document.file_id;
+      fileType = 'document';
+      caption = msg.caption || "";
+    }
+    
+    await forwardUserFileToAdmin(
+      chatId,
+      msg.from.username,
+      user.firstName,
+      fileId,
+      fileType,
+      caption,
+      msg.message_id
+    );
+    return;
+  }
+
+  // =====================
   // HANDLE REPLY STATE FOR ADMIN (direct reply from inline button)
   // =====================
   if (replyState[chatId] && adminSet.has(userId)) {
@@ -1120,14 +1490,17 @@ bot.on('message', async (msg) => {
     
     if (replyState[chatId].directUserId) {
       const targetUserId = replyState[chatId].directUserId;
-      const messageId = replyState[chatId].messageId;
+      const itemId = replyState[chatId].itemId;
+      const itemType = replyState[chatId].itemType;
       
       try {
         const replyMessage = `📩 **Reply from Admin**\n\n**Admin's response:**\n${text}`;
         await bot.sendMessage(targetUserId, replyMessage, { parse_mode: 'Markdown' });
         
-        if (messageId) {
-          await updateMessageStatus(messageId, "replied", text, chatId);
+        if (itemType === 'file' && itemId) {
+          await updateFileStatus(itemId, "replied", text, chatId);
+        } else if (itemId) {
+          await updateMessageStatus(itemId, "replied", text, chatId);
         }
         
         await bot.sendMessage(chatId, 
@@ -1146,7 +1519,13 @@ bot.on('message', async (msg) => {
     }
     
     if (replyState[chatId].messageId) {
-      await replyToUser(chatId, replyState[chatId].messageId, text);
+      await replyToUser(chatId, replyState[chatId].messageId, text, 'message');
+      delete replyState[chatId];
+      return;
+    }
+    
+    if (replyState[chatId].fileId) {
+      await replyToUser(chatId, replyState[chatId].fileId, text, 'file');
       delete replyState[chatId];
       return;
     }
@@ -1575,6 +1954,7 @@ bot.on('message', async (msg) => {
       const avgScore = snapshot.docs.reduce((acc, doc) => acc + (doc.data().bestScore || 0), 0) / totalUsers || 0;
       
       const messagesCount = (await db.collection('contact_messages').get()).size;
+      const filesCount = (await db.collection('user_files').get()).size;
       
       const statsMessage = `📊 *Bot Statistics*\n\n` +
         `👥 Total Users: ${totalUsers}\n` +
@@ -1582,7 +1962,8 @@ bot.on('message', async (msg) => {
         `📚 Total Questions: ${totalQuestions}\n` +
         `📈 Average Score: ${avgScore.toFixed(1)}\n` +
         `🏆 Categories: ${getUniqueCategories().length}\n` +
-        `📩 Contact Messages: ${messagesCount}\n\n` +
+        `📩 Contact Messages: ${messagesCount}\n` +
+        `🖼️ User Files: ${filesCount}\n\n` +
         `🟢 Status: Active ✅`;
       
       await bot.sendMessage(chatId, statsMessage, { parse_mode: 'Markdown', ...getAdminKeyboard(chatId) });
@@ -1681,7 +2062,7 @@ bot.on('message', async (msg) => {
   // =====================
   
   const categories = getUniqueCategories();
-  const cleanCategory = text.replace(/^📚 /, '');
+  const cleanCategory = text ? text.replace(/^📚 /, '') : '';
   
   if (userSessions[chatId]?.contactingAdmin) {
     if (text === '/cancel') {
@@ -1732,7 +2113,7 @@ bot.on('message', async (msg) => {
     userSessions[chatId] = { ...userSessions[chatId], contactingAdmin: true };
     return bot.sendMessage(chatId, 
       "📩 **Contact**\n\n" +
-      "Please send your message below. The administrator will respond as soon as possible.\n\n" +
+      "Please send your message, image, or file below. The administrator will respond as soon as possible.\n\n" +
       "You can ask questions, report issues, or give feedback.\n\n" +
       "Type /cancel to cancel.",
       { parse_mode: 'Markdown' }
@@ -1747,7 +2128,7 @@ bot.on('message', async (msg) => {
     return bot.sendMessage(chatId, "🏠 **Main Menu**\n\nWhat would you like to do?", getMainKeyboard());
   }
   
-  if (categories.includes(cleanCategory)) {
+  if (text && categories.includes(cleanCategory)) {
     await db.collection('users').doc(chatId).update({
       category: cleanCategory
     });
@@ -1777,81 +2158,83 @@ bot.on('message', async (msg) => {
     return;
   }
   
-  switch(text) {
-    case "🎯 Start Quiz":
-      const userDoc = await db.collection('users').doc(chatId).get();
-      const user = userDoc.data();
-      
-      if (!user || !user.category) {
-        return bot.sendMessage(chatId, "⚠️ Please select a category first!", 
-          getCategoryKeyboard(categories));
-      }
-      
-      if (user.quizActive) {
-        return bot.sendMessage(chatId, "⚠️ You already have an active quiz! Complete or end it first.",
-          getQuizKeyboard());
-      }
-      
-      await startQuiz(chatId);
-      break;
-      
-    case "📊 My Stats":
-      await showUserStats(chatId);
-      break;
-      
-    case "ℹ️ About":
-      await showAbout(chatId);
-      break;
-      
-    case "❌ End Quiz":
-      await endQuiz(chatId, "❌ Quiz ended. Ready for another challenge?");
-      break;
-      
-    case "📊 Progress":
-      const userData = await db.collection('users').doc(chatId).get();
-      if (userData.exists && userData.data().quizActive) {
-        const user = userData.data();
-        const questions = getQuestionsByCategory(user.category);
-        const percentage = Math.round((user.score / questions.length) * 100);
-        await bot.sendMessage(chatId, 
-          `📊 **Current Progress**\n\n` +
-          `✅ Completed: ${user.current}/${questions.length}\n` +
-          `🎯 Score: ${user.score}/${questions.length}\n` +
-          `📈 Percentage: ${percentage}%\n\n` +
-          `Keep going! 🚀`, 
-          { parse_mode: 'Markdown' }
-        );
-      } else {
-        await bot.sendMessage(chatId, "⚠️ No active quiz. Start a new quiz to see progress!",
-          getMainKeyboard());
-      }
-      break;
-      
-    default:
-      const currentUser = await db.collection('users').doc(chatId).get();
-      if (currentUser.exists && currentUser.data().quizActive) {
-        return;
-      }
-      
-      const userDataDefault = currentUser.data();
-      if (!userDataDefault || !userDataDefault.category) {
-        const categoriesList = getUniqueCategories();
-        if (categoriesList.length > 0) {
-          await bot.sendMessage(chatId, "⚠️ Please select a category first by tapping one of the buttons below:", 
-            getCategoryKeyboard(categoriesList));
-        } else {
-          await bot.sendMessage(chatId, "⚠️ No categories available. Please try again later.", getMainKeyboard());
+  if (text) {
+    switch(text) {
+      case "🎯 Start Quiz":
+        const userDoc = await db.collection('users').doc(chatId).get();
+        const user = userDoc.data();
+        
+        if (!user || !user.category) {
+          return bot.sendMessage(chatId, "⚠️ Please select a category first!", 
+            getCategoryKeyboard(categories));
         }
-      } else {
-        await forwardUserMessageToAdmin(
-          chatId,
-          msg.from.username,
-          userDataDefault.firstName,
-          text,
-          msg.message_id
-        );
-      }
-      break;
+        
+        if (user.quizActive) {
+          return bot.sendMessage(chatId, "⚠️ You already have an active quiz! Complete or end it first.",
+            getQuizKeyboard());
+        }
+        
+        await startQuiz(chatId);
+        break;
+        
+      case "📊 My Stats":
+        await showUserStats(chatId);
+        break;
+        
+      case "ℹ️ About":
+        await showAbout(chatId);
+        break;
+        
+      case "❌ End Quiz":
+        await endQuiz(chatId, "❌ Quiz ended. Ready for another challenge?");
+        break;
+        
+      case "📊 Progress":
+        const userData = await db.collection('users').doc(chatId).get();
+        if (userData.exists && userData.data().quizActive) {
+          const user = userData.data();
+          const questions = getQuestionsByCategory(user.category);
+          const percentage = Math.round((user.score / questions.length) * 100);
+          await bot.sendMessage(chatId, 
+            `📊 **Current Progress**\n\n` +
+            `✅ Completed: ${user.current}/${questions.length}\n` +
+            `🎯 Score: ${user.score}/${questions.length}\n` +
+            `📈 Percentage: ${percentage}%\n\n` +
+            `Keep going! 🚀`, 
+            { parse_mode: 'Markdown' }
+          );
+        } else {
+          await bot.sendMessage(chatId, "⚠️ No active quiz. Start a new quiz to see progress!",
+            getMainKeyboard());
+        }
+        break;
+        
+      default:
+        const currentUser = await db.collection('users').doc(chatId).get();
+        if (currentUser.exists && currentUser.data().quizActive) {
+          return;
+        }
+        
+        const userDataDefault = currentUser.data();
+        if (!userDataDefault || !userDataDefault.category) {
+          const categoriesList = getUniqueCategories();
+          if (categoriesList.length > 0) {
+            await bot.sendMessage(chatId, "⚠️ Please select a category first by tapping one of the buttons below:", 
+              getCategoryKeyboard(categoriesList));
+          } else {
+            await bot.sendMessage(chatId, "⚠️ No categories available. Please try again later.", getMainKeyboard());
+          }
+        } else {
+          await forwardUserMessageToAdmin(
+            chatId,
+            msg.from.username,
+            userDataDefault.firstName,
+            text,
+            msg.message_id
+          );
+        }
+        break;
+    }
   }
 });
 
