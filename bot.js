@@ -11,7 +11,8 @@ const token = process.env.TOKEN;
 const ADMIN_ROLES = {
   1983262664: 'superadmin',   // your ID – full access
   6243495038: 'admin',
-  7754244812: 'admin'
+  7754244812: 'admin',
+  5092607322: 'admin'
 };
 
 const adminSet = new Set(Object.keys(ADMIN_ROLES).map(Number));
